@@ -1,23 +1,30 @@
 # Flashlight Scripture Mazes
 
-Sterling's (`sgbaird`) projector game for Sunday family play: a maze is projected on a wall, a camera watches
+Sterling's (`sgbaird`) projector activity for Sunday family time: a maze is projected on a wall, a camera watches
 it, and children guide a scripture-story figure through the maze with a flashlight. `README.md` covers play and
 setup.
 
 - Python with OpenCV, NumPy, pygame and PyYAML (`requirements.txt`).
-- `game.py` is the entry point (pygame, screens, walker, dwell buttons). `maze.py` (generation, paths, item
+- `activity.py` is the entry point (pygame, screens, walker, dwell buttons). `maze.py` (generation, paths, item
   placement) and `flashlight.py` (calibration geometry, spot detection, camera thread) have no pygame, so they
   are unit-tested. `art.py` turns the downloaded pictures into cards and circular portraits. `stories.py` lists
-  the stories, their picture crops and songs. `fetch_art.py` downloads the pictures.
-- Check changes with `python -m pytest tests` and `python -m py_compile *.py`. The game needs a projector,
-  camera and display, so a CI runner cannot play it; `python game.py --mouse --window` runs without a camera.
+  the stories, their picture crops and songs. `fetch_art.py` downloads the pictures, scripture passages and
+  songs' instrumental accompaniments.
+- Check changes with `python -m pytest tests` and `python -m py_compile *.py`. The activity needs a projector,
+  camera and display, so a CI runner cannot run it; `python activity.py --mouse --window` runs without a camera.
   Say what was not run.
 - Keep the projected picture dim: dark sky, muted walls (`WALL`), portraits dimmed (`art.portrait`). The
   detector finds the flashlight as the patch that is both much brighter than the learned background and bright
-  in absolute terms (`DIFF`, `MIN_LEVEL` in `flashlight.py`). Anything bright and moving that the game draws can
+  in absolute terms and big enough (`DIFF`, `MIN_LEVEL`, `MIN_AREA` in `flashlight.py`). Anything bright and moving that the activity draws can
   be mistaken for the flashlight; never draw a marker at the detected spot (it would detect itself).
 - Content must suit Sunday: scripture stories told as in *Old Testament Stories*, gentle sounds, nothing scary
   or violent (the lions are quiet; David's maze is about gathering stones, not the fight).
+- Call it an **activity**, never a game: on screen, in docs, comments, commits and pull requests.
+- Testing with the camera (local sessions): `python activity.py --camera 1 --record <dir>` saves the camera
+  video, the projected picture and a log. Blur faces locally (an offline model such as `deface`) before
+  looking at any camera frame, and never commit the videos: the camera shows the room and family, and the
+  screen video shows church pictures. The logs (`log.jsonl`) and a transcript without tool outputs may be
+  committed for provenance under `docs/provenance/<date>/`.
 
 ## Church media: never commit it
 
@@ -30,7 +37,7 @@ licensed for personal, noncommercial use. This repository is public, so:
   the image IDs the content API returns. Before adding a song, check that its page title is the song's name; an
   unknown slug still returns HTTP 200 with the title "Music Library".
 - Mazes are generated, never traced or copied from the *Friend*.
-- A Codex session on GitHub cannot see `art/`, so the game must work without it (drawn figures).
+- A Codex session on GitHub cannot see `art/`, so the activity must work without it (drawn figures).
 
 ## @codex on GitHub
 

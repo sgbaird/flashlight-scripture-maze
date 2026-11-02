@@ -1,15 +1,16 @@
 """Flashlight Scripture Mazes: guide a scripture story figure through a projected maze with a flashlight.
 
-    python game.py                     # camera 0, projector = last display
-    python game.py --camera 1          # pick the camera
-    python game.py --mouse             # no camera: the mouse is the flashlight
-    python game.py --story baby-moses  # start with one story
+    python activity.py                     # camera 0, projector = last display
+    python activity.py --camera 1          # pick the camera
+    python activity.py --mouse             # no camera: the mouse is the flashlight
+    python activity.py --story baby-moses  # start with one story
 
-Keys: N / P next / previous story, R new maze, M open the story's song, C recalibrate,
+Keys: N / P next / previous story, R new maze, M music on / off, S scripture, C recalibrate,
 D camera view, arrow keys move the walker, F11 fullscreen, Esc quit.
 """
 import argparse
 import io
+import json
 import math
 import os
 import random
@@ -17,13 +18,12 @@ import struct
 import sys
 import time
 import wave
-import webbrowser
 
 import pygame
 
 import art
 from maze import Maze, SIZES
-from stories import STORIES, SONGBOOK
+from stories import STORIES
 
 W, H = 1920, 1080
 FPS = 60
@@ -40,7 +40,9 @@ GOLD = (190, 155, 80)
 LEAD = 2.4        # the walker follows a light within this many cells of it...
 MAX_STEPS = 4     # ...if it can get there in this many steps
 SPEED = 3.2       # cells per second
-DWELL = 1.5       # seconds of light on a button to press it
+DWELL = 1.6       # seconds of light on a button to press it
+ARM = 0.5         # a new button counts the light only after it has been off the button this long
+MUSIC_VOLUME = 0.3  # the songs' instrumental accompaniments (art/music, from fetch_art.py), kept soft
 VERSE = ("“Thy word is a lamp unto my feet, and a light unto my path.”", "Psalm 119:105")
 
 
@@ -142,10 +144,15 @@ class DwellButton:
     def __init__(self, center, radius, label):
         self.center, self.radius, self.label = center, radius, label
         self.progress = 0.0
+        self.off_for = 0.0   # so a light left where the last screen's button was does not press this one
 
     def update(self, light, dt):
         inside = light is not None and math.hypot(light[0] - self.center[0], light[1] - self.center[1]) <= self.radius
-        self.progress = min(1.0, self.progress + dt / DWELL) if inside else max(0.0, self.progress - dt)
+        if self.off_for < ARM:
+            self.off_for = 0.0 if inside else self.off_for + dt
+            return False
+        # fills while the light stays on it and drains quickly, so a light passing over it does not add up
+        self.progress = min(1.0, self.progress + dt / DWELL) if inside else max(0.0, self.progress - 3 * dt)
         if self.progress >= 1.0:
             self.progress = 0.0
             return True
@@ -159,14 +166,63 @@ class DwellButton:
         if self.progress > 0:
             rect = pygame.Rect(0, 0, 2 * r + 24, 2 * r + 24)
             rect.center = (x, y)
-            pygame.draw.arc(surface, (220, 200, 140), rect, math.pi / 2, math.pi / 2 + 2 * math.pi * self.progress, 8)
+            # dim, so the ring itself is not taken for the flashlight
+            pygame.draw.arc(surface, (130, 112, 70), rect, math.pi / 2, math.pi / 2 + 2 * math.pi * self.progress, 6)
         img = font.render(self.label, True, TEXT)
         surface.blit(img, img.get_rect(center=(x, y)))
 
 
-# ----------------------------------------------------------------------------- the game
+class Recorder:
+    """--record DIR: the projected picture, the camera image and a log, to check a session afterwards.
 
-class Game:
+    Everything stays in DIR on this computer. The camera video shows the room (and people in it).
+    """
+
+    def __init__(self, folder, fps=10):
+        import cv2
+        self.cv2, self.folder, self.dt = cv2, folder, 1.0 / fps
+        os.makedirs(folder, exist_ok=True)
+        self.log = open(os.path.join(folder, "log.jsonl"), "a", encoding="utf-8")
+        self.screen_video = self.camera_video = None
+        self.next, self.n, self.cam_n = 0.0, 0, 0
+        self.fps = fps
+
+    def _writer(self, name, frame):
+        h, w = frame.shape[:2]
+        return self.cv2.VideoWriter(os.path.join(self.folder, name), self.cv2.VideoWriter_fourcc(*"MJPG"),
+                                    self.fps, (w, h))
+
+    def event(self, kind, **info):
+        self.log.write(json.dumps({"t": round(time.time(), 3), "event": kind, **info}) + "\n")
+
+    def tick(self, now, canvas, camera_frame, info):
+        if now < self.next:
+            return
+        self.next = now + self.dt
+        small = pygame.transform.smoothscale(canvas, (640, 360))
+        screen = pygame.surfarray.array3d(small).swapaxes(0, 1)[:, :, ::-1].copy()
+        if self.screen_video is None:
+            self.screen_video = self._writer("screen.avi", screen)
+        self.screen_video.write(screen)
+        if camera_frame is not None:
+            if self.camera_video is None:
+                self.camera_video = self._writer("camera.avi", camera_frame)
+            self.camera_video.write(camera_frame)
+            self.cam_n += 1
+        cam = self.cam_n - 1 if camera_frame is not None else None
+        self.log.write(json.dumps({"t": round(now, 3), "frame": self.n, "cam_frame": cam, **info}) + "\n")
+        self.n += 1
+
+    def close(self):
+        for v in (self.screen_video, self.camera_video):
+            if v is not None:
+                v.release()
+        self.log.close()
+
+
+# ----------------------------------------------------------------------------- the activity
+
+class Activity:
     def __init__(self, args):
         self.args = args
         pygame.init()
@@ -180,7 +236,8 @@ class Game:
         except pygame.error:
             self.sounds = {}
         self.fonts = {k: pygame.font.SysFont("georgia,timesnewroman,serif", v) for k, v in
-                      (("huge", 84), ("big", 58), ("mid", 40), ("small", 30))}
+                      (("huge", 84), ("big", 58), ("mid", 40), ("small", 30), ("read", 29), ("tiny", 22))}
+        self.reading, self.read_button = False, None
         self.stars = [(random.randrange(W), random.randrange(H), random.choice((1, 1, 2))) for _ in range(140)]
         self.story_index = 0
         if args.story:
@@ -193,9 +250,10 @@ class Game:
         self.message, self.message_until = "", 0.0
         self.state = "title"
         self.button = DwellButton((W // 2, int(H * 0.72)), 110, "Begin")
+        self.rec = Recorder(args.record) if args.record else None
         self._start_camera()
-        if not args.no_music:
-            self.open_song()
+        self.music_on, self.music_playing = not args.no_music, None
+        self.update_music()
 
     # --- setup
     def _open_window(self, fullscreen):
@@ -225,17 +283,65 @@ class Game:
 
     def say(self, text, seconds=4.0):
         self.message, self.message_until = text, time.time() + seconds
+        if getattr(self, "rec", None):
+            self.rec.event("say", text=text)
+
+    def snapshot(self):
+        """What the activity knows at this moment, for the --record log."""
+        now = time.time()
+        r = lambda p: None if p is None else [round(p[0]), round(p[1])]
+        info = {"state": self.state, "story": self.story.slug, "light": r(self.light()),
+                "mouse": now - self.mouse_seen < 2.0}
+        if self.camera is not None:
+            info["spot"] = r(self.camera.recent_spot())
+            det = self.camera.detector
+            info["det"] = det.stats if det is not None else None
+        if self.state == "maze":
+            info.update(cell=list(self.cur), pos=r(self.pos), route=[list(c) for c in self.route],
+                        following=round(self.following, 2), collected=self.collected,
+                        items=[list(c) for c in self.items], goal=list(self.maze.goal),
+                        celebrating=self.celebrate is not None)
+        elif self.state != "calibrate":
+            info["button"] = [self.button.label, round(self.button.progress, 2)]
+        return info
 
     @property
     def story(self):
         return STORIES[self.story_index]
 
-    def open_song(self):
+    def update_music(self):
+        """Play the story's song (looping, soft) when music is on; fade out when it is off."""
+        if not pygame.mixer.get_init():
+            return
+        title, slug = self.story.song
+        if not self.music_on:
+            pygame.mixer.music.fadeout(1500)
+            self.music_playing = None
+            return
+        if self.music_playing == slug:
+            return
+        path = os.path.join(art.ART, "music", slug + ".mp3")
+        if not os.path.exists(path):
+            pygame.mixer.music.fadeout(1500)
+            self.music_playing = None
+            return
         try:
-            webbrowser.open(self.story.song_url)
-            self.say("Opened “%s” in the browser." % self.story.song[0])
-        except Exception:
-            self.say("Could not open the browser. Songs: " + SONGBOOK, 8)
+            pygame.mixer.music.load(path)
+            pygame.mixer.music.set_volume(MUSIC_VOLUME)
+            pygame.mixer.music.play(-1, fade_ms=2500)
+            self.music_playing = slug
+        except pygame.error:
+            self.music_playing = None
+
+    def toggle_music(self):
+        self.music_on = not self.music_on
+        self.update_music()
+        if not self.music_on:
+            self.say("Music off.", 2)
+        elif self.music_playing:
+            self.say("Music: “%s”" % self.story.song[0], 3)
+        else:
+            self.say("No music for this song yet: run fetch_art.py.", 5)
 
     def reset_detector(self):
         if self.camera and self.camera.detector:
@@ -287,7 +393,56 @@ class Game:
     def show_card(self):
         self.state = "card"
         self.button = DwellButton((int(W * 0.78), int(H * 0.8)), 105, "Start")
+        self.close_scripture()
+        self.update_music()
+
+    # --- the scripture passage, opened from the story card or the ending
+    def open_scripture(self):
+        verses = art.scripture(self.story)
+        if not verses:
+            self.say("No scripture text yet: run fetch_art.py.", 5)
+            return
+        font, width = self.fonts["read"], (W - 260) // 2
+        chapters = {v[0].split(":")[0] for v in verses}
+        per_column = (H - 170 - 230) // font.get_linesize()
+        columns = [[]]
+        for label, text in verses:  # whole verses in each column, a blank line between them
+            num = label if len(chapters) > 1 else label.split(":")[1]
+            block = [(i == 0 and num, ln) for i, ln in enumerate(wrap(font, text, width - 70))]
+            if columns[-1] and len(columns[-1]) + 1 + len(block) > per_column:
+                columns.append([])
+            columns[-1] += ([(False, "")] if columns[-1] else []) + block
+        self.pages = [columns[i:i + 2] for i in range(0, len(columns), 2)]
+        self.page = 0
+        self.show_scripture_buttons()
+
+    def show_scripture_buttons(self):
+        self.reading = True
+        self.back_button = DwellButton((int(W * 0.9), int(H * 0.88)), 80, "Back")
+        self.more_button = (DwellButton((int(W * 0.78), int(H * 0.88)), 80, "More")
+                            if len(self.pages) > 1 else None)
         self.reset_detector()
+
+    def more_scripture(self):
+        self.page = (self.page + 1) % len(self.pages)
+        self.show_scripture_buttons()
+
+    def close_scripture(self):
+        self.reading = False
+        self.read_button = DwellButton((int(W * 0.6), int(H * 0.8)), 80, "Read") if art.scripture(self.story) else None
+        self.reset_detector()
+
+    def buttons(self):
+        """(button, action) pairs on this screen."""
+        if self.state in ("card", "done") and self.reading:
+            pairs = [(self.back_button, self.close_scripture)]
+            if self.more_button:
+                pairs.append((self.more_button, self.more_scripture))
+            return pairs
+        pairs = [(self.button, self.advance)]
+        if self.state in ("card", "done") and self.read_button:
+            pairs.append((self.read_button, self.open_scripture))
+        return pairs
 
     def start_maze(self, seed=None):
         st = self.story
@@ -362,7 +517,7 @@ class Game:
             if now - self.celebrate > 2.5:
                 self.state = "done"
                 self.button = DwellButton((int(W * 0.78), int(H * 0.82)), 105, "Next")
-                self.reset_detector()
+                self.close_scripture()
             return
         if light is not None:
             self.last_light = now
@@ -398,6 +553,8 @@ class Game:
             self.items.remove(cell)
             self.collected += 1
             self.play("collect")
+            if self.rec:
+                self.rec.event("collect", cell=list(cell), collected=self.collected)
         if cell == self.maze.goal:
             if self.items:
                 self.play("locked")
@@ -407,6 +564,8 @@ class Game:
                 self.route = []
                 self.celebrate = time.time()
                 self.play("goal")
+                if self.rec:
+                    self.rec.event("goal", story=self.story.slug)
 
     def move_key(self, dc, dr):
         if self.state == "maze" and self.celebrate is None and not self.route:
@@ -432,7 +591,25 @@ class Game:
                   (W // 2, int(H * 0.88)), SOFT, anchor="midtop")
         self.button.draw(s, self.fonts["mid"], now)
 
+    def draw_scripture(self, s, now):
+        self.draw_sky(s)
+        st, font = self.story, self.fonts["read"]
+        title = st.ref + ("   (%d / %d)" % (self.page + 1, len(self.pages)) if len(self.pages) > 1 else "")
+        draw_text(s, self.fonts["mid"], title, (100, 70), GOLD)
+        step = font.get_linesize()
+        for col, lines in enumerate(self.pages[self.page]):
+            for row, (num, line) in enumerate(lines):
+                x, y = 100 + col * ((W - 260) // 2 + 60), 170 + row * step
+                if num:
+                    draw_text(s, self.fonts["tiny"], num, (x, y + 4), GOLD)
+                draw_text(s, font, line, (x + 70, y), TEXT)
+        self.back_button.draw(s, self.fonts["small"], now)
+        if self.more_button:
+            self.more_button.draw(s, self.fonts["small"], now)
+
     def draw_card(self, s, now, ending=False):
+        if self.reading:
+            return self.draw_scripture(s, now)
         self.draw_sky(s)
         st = self.story
         pic = art.card(st, (int(W * 0.5), int(H * 0.72)))
@@ -452,9 +629,11 @@ class Game:
         if st.items and not ending:
             y = draw_text(s, self.fonts["small"], "Gather %d %s on the way." % (st.items[1], st.items[0]),
                           (x0, y + 15), SOFT, width)
-        draw_text(s, self.fonts["small"], "♪ %s  (press M to open the song)" % st.song[0],
+        draw_text(s, self.fonts["small"], "♪ %s  (M: music on / off)" % st.song[0],
                   (x0, y + 30), SOFT, width)
         self.button.draw(s, self.fonts["mid"], now)
+        if self.read_button:
+            self.read_button.draw(s, self.fonts["small"], now)
 
     def draw_maze(self, s, now):
         s.blit(self.maze_surface, (0, 0))
@@ -513,12 +692,14 @@ class Game:
             self.mouse_seen = time.time()
         if e.type == pygame.KEYDOWN:
             k = e.key
+            if self.rec:
+                self.rec.event("key", key=pygame.key.name(k), state=self.state)
             if k == pygame.K_ESCAPE:
                 return False
             if k == pygame.K_F11:
                 self.window = self._open_window(not (self.window.get_flags() & pygame.FULLSCREEN))
             elif k == pygame.K_m:
-                self.open_song()
+                self.toggle_music()
             elif k == pygame.K_c and self.camera is not None:
                 self.begin_calibration()
             elif k == pygame.K_d and self.camera is not None:
@@ -530,7 +711,16 @@ class Game:
             elif k == pygame.K_r and self.state == "maze":
                 self.start_maze()
             elif k in (pygame.K_SPACE, pygame.K_RETURN):
-                self.advance()
+                self.play("press")
+                if self.reading and self.state in ("card", "done"):
+                    self.close_scripture()
+                else:
+                    self.advance()
+            elif k == pygame.K_s and self.state in ("card", "done"):
+                if self.reading:
+                    self.close_scripture()
+                else:
+                    self.open_scripture()
             elif k == pygame.K_LEFT:
                 self.move_key(-1, 0)
             elif k == pygame.K_RIGHT:
@@ -542,7 +732,8 @@ class Game:
         return True
 
     def advance(self):
-        self.play("press")
+        if self.rec:
+            self.rec.event("press", state=self.state, story=self.story.slug)
         if self.state == "title":
             self.show_card()
         elif self.state == "card":
@@ -562,8 +753,13 @@ class Game:
                 self.update_calibration()
             elif self.state == "maze":
                 self.update_maze(dt, now)
-            elif self.button.update(self.light(), dt):
-                self.advance()
+            else:
+                light = self.light()
+                for button, action in self.buttons():
+                    if button.update(light, dt):
+                        self.play("press")
+                        action()
+                        break
             s = self.canvas
             if self.state == "calibrate":
                 self.draw_calibration(s)
@@ -579,9 +775,13 @@ class Game:
                 draw_text(s, self.fonts["small"], self.message, (W // 2, H - 95), GOLD, anchor="midtop")
             self.window.blit(pygame.transform.scale(s, self.window.get_size()), (0, 0))
             pygame.display.flip()
+            if self.rec:
+                self.rec.tick(now, s, self.camera.latest_frame() if self.camera else None, self.snapshot())
             self.clock.tick(FPS)
         if self.camera:
             self.camera.stop()
+        if self.rec:
+            self.rec.close()
         pygame.quit()
 
 
@@ -589,18 +789,19 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--camera", type=int, default=int(os.environ.get("MAZE_CAMERA", 0)),
                    help="camera index (default 0, or MAZE_CAMERA)")
-    p.add_argument("--display", type=int, default=None, help="display for the game (default: the last one)")
+    p.add_argument("--display", type=int, default=None, help="display to show it on (default: the last one)")
     p.add_argument("--calibration", default=os.path.join(HERE, "calibration.yaml"),
                    help="projection corners in the camera image (projector_points, as in balloon-pop-game)")
     p.add_argument("--mouse", action="store_true", help="no camera; the mouse is the flashlight")
     p.add_argument("--window", action="store_true", help="a window instead of fullscreen")
-    p.add_argument("--no-music", action="store_true", help="do not open the song in the browser")
+    p.add_argument("--no-music", action="store_true", help="start with the music off (M turns it on)")
     p.add_argument("--story", help="start with this story (its slug in stories.py)")
     p.add_argument("--size", choices=sorted(SIZES), help="maze size for every story")
     p.add_argument("--seed", type=int, help="maze random seed")
+    p.add_argument("--record", metavar="DIR", help="save the projected picture, camera video and a log to DIR (stays local)")
     return p.parse_args(argv)
 
 
 if __name__ == "__main__":
-    Game(parse_args()).run()
+    Activity(parse_args()).run()
     sys.exit(0)
