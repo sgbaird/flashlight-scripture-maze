@@ -5,7 +5,7 @@
     python activity.py --mouse             # no camera: the mouse is the flashlight
     python activity.py --story baby-moses  # start with one story
 
-Keys: N / P next / previous story, R new maze, M music on / off, S scripture, C recalibrate,
+Keys: N / P next / previous story, R new maze, M music on / off, S scripture, B blank screen, C recalibrate,
 D camera view, arrow keys move the walker, F11 fullscreen, Esc quit.
 """
 import argparse
@@ -22,6 +22,7 @@ import wave
 import pygame
 
 import art
+import pictures
 from maze import Maze, SIZES
 from stories import STORIES
 
@@ -110,10 +111,12 @@ def draw_text(surface, font, text, pos, color=TEXT, width=None, anchor="topleft"
     return y
 
 
-def draw_icon(surface, kind, center, size):
+def draw_icon(surface, kind, center, size, variant=0):
     x, y = center
     s = size
-    if kind == "rope":
+    if kind == "animal":
+        pictures.animal(surface, x, y, s, variant)
+    elif kind == "rope":
         for k in range(3):
             pygame.draw.circle(surface, (150, 110, 60), (x, y), int(s * (0.45 - 0.12 * k)), max(2, s // 12))
     elif kind == "stone":
@@ -179,6 +182,8 @@ class Recorder:
     """
 
     def __init__(self, folder, fps=10):
+        import queue
+        import threading
         import cv2
         self.cv2, self.folder, self.dt = cv2, folder, 1.0 / fps
         os.makedirs(folder, exist_ok=True)
@@ -186,6 +191,37 @@ class Recorder:
         self.screen_video = self.camera_video = None
         self.next, self.n, self.cam_n = 0.0, 0, 0
         self.fps = fps
+        # videos are encoded on a background thread, so recording never makes the picture stutter
+        self.queue, self.full = queue.Queue(maxsize=40), queue.Full
+        self.thread = threading.Thread(target=self._work, daemon=True)
+        self.thread.start()
+
+    def _put(self, item):
+        try:
+            self.queue.put_nowait(item)
+        except self.full:  # the disk cannot keep up: drop this one rather than slow the activity
+            pass
+
+    def _work(self):
+        while True:
+            item = self.queue.get()
+            if item is None:
+                return
+            if item[0] == "log":
+                self.log.write(json.dumps(item[1]) + "\n")
+                continue
+            _, now, screen, camera_frame, info = item
+            if self.screen_video is None:
+                self.screen_video = self._writer("screen.avi", screen)
+            self.screen_video.write(screen)
+            if camera_frame is not None:
+                if self.camera_video is None:
+                    self.camera_video = self._writer("camera.avi", camera_frame)
+                self.camera_video.write(camera_frame)
+                self.cam_n += 1
+            cam = self.cam_n - 1 if camera_frame is not None else None
+            self.log.write(json.dumps({"t": round(now, 3), "frame": self.n, "cam_frame": cam, **info}) + "\n")
+            self.n += 1
 
     def _writer(self, name, frame):
         h, w = frame.shape[:2]
@@ -193,7 +229,7 @@ class Recorder:
                                     self.fps, (w, h))
 
     def event(self, kind, **info):
-        self.log.write(json.dumps({"t": round(time.time(), 3), "event": kind, **info}) + "\n")
+        self._put(("log", {"t": round(time.time(), 3), "event": kind, **info}))
 
     def tick(self, now, canvas, camera_frame, info):
         if now < self.next:
@@ -201,19 +237,11 @@ class Recorder:
         self.next = now + self.dt
         small = pygame.transform.smoothscale(canvas, (640, 360))
         screen = pygame.surfarray.array3d(small).swapaxes(0, 1)[:, :, ::-1].copy()
-        if self.screen_video is None:
-            self.screen_video = self._writer("screen.avi", screen)
-        self.screen_video.write(screen)
-        if camera_frame is not None:
-            if self.camera_video is None:
-                self.camera_video = self._writer("camera.avi", camera_frame)
-            self.camera_video.write(camera_frame)
-            self.cam_n += 1
-        cam = self.cam_n - 1 if camera_frame is not None else None
-        self.log.write(json.dumps({"t": round(now, 3), "frame": self.n, "cam_frame": cam, **info}) + "\n")
-        self.n += 1
+        self._put(("frame", now, screen, camera_frame, info))
 
     def close(self):
+        self.queue.put(None)
+        self.thread.join(timeout=10)
         for v in (self.screen_video, self.camera_video):
             if v is not None:
                 v.release()
@@ -238,6 +266,7 @@ class Activity:
         self.fonts = {k: pygame.font.SysFont("georgia,timesnewroman,serif", v) for k, v in
                       (("huge", 84), ("big", 58), ("mid", 40), ("small", 30), ("read", 29), ("tiny", 22))}
         self.reading, self.read_button = False, None
+        self.blank = False   # B: a black screen, to stop and read from a book
         self.stars = [(random.randrange(W), random.randrange(H), random.choice((1, 1, 2))) for _ in range(140)]
         self.story_index = 0
         if args.story:
@@ -332,6 +361,19 @@ class Activity:
             self.music_playing = slug
         except pygame.error:
             self.music_playing = None
+
+    def toggle_blank(self):
+        """Black screen and paused (music too) until B is pressed again."""
+        self.blank = not self.blank
+        if pygame.mixer.get_init():
+            (pygame.mixer.music.pause if self.blank else pygame.mixer.music.unpause)()
+        if self.rec:
+            self.rec.event("blank", on=self.blank)
+        if not self.blank:
+            self.last_light = time.time()
+            if self.state in ("title", "card", "done"):
+                self.button.off_for = 0.0   # the light has to leave the button before it counts again
+            self.reset_detector()
 
     def toggle_music(self):
         self.music_on = not self.music_on
@@ -453,6 +495,7 @@ class Activity:
         self.oy = 130 + (H - 150 - self.cell * rows) / 2
         count = st.items[1] if st.items else 0
         self.items = self.maze.place_items(count)
+        self.item_variants = {cell: i for i, cell in enumerate(self.items)}
         self.collected = 0
         self.cur = self.maze.start
         self.pos = list(self.center(self.cur))
@@ -483,6 +526,14 @@ class Activity:
         m, k = self.maze, self.cell
         pygame.draw.rect(s, CORRIDOR, (self.ox, self.oy, k * m.cols, k * m.rows))
         t = max(6, int(k * 0.08))
+        if self.story.scenery:  # a little scenery here and there, away from the start, goal and items
+            taken = {m.start, m.goal, *self.items}
+            free = [(c, r) for c in range(m.cols) for r in range(m.rows) if (c, r) not in taken]
+            spots = m.rng.sample(free, min(5, len(free)))
+            layer = pygame.Surface((W, H), pygame.SRCALPHA)
+            pictures.scenery(layer, self.story.scenery, [self.center(c) for c in spots], int(k * 0.55), m.rng.random())
+            layer.fill((255, 255, 255, 140), special_flags=pygame.BLEND_RGBA_MULT)  # faint: background, not things to gather
+            s.blit(layer, (0, 0))
 
         def wall(a, b):  # a wall segment with rounded ends
             pygame.draw.line(s, WALL, a, b, t)
@@ -639,13 +690,16 @@ class Activity:
         s.blit(self.maze_surface, (0, 0))
         k = self.cell
         for cell in self.items:
-            draw_icon(s, self.story.items[2], [int(v) for v in self.center(cell)], int(k * 0.6))
+            draw_icon(s, self.story.items[2], [int(v) for v in self.center(cell)], int(k * 0.6),
+                      self.item_variants.get(cell, 0))
         gx, gy = [int(v) for v in self.center(self.maze.goal)]
         locked = bool(self.items)
         glow = int(k * (0.5 + 0.04 * math.sin(now * 3)))
         pygame.draw.circle(s, (60, 55, 40) if locked else (95, 85, 50), (gx, gy), glow)
         if self.goal_img is not None:
             s.blit(self.goal_img, self.goal_img.get_rect(center=(gx, gy)))
+        elif self.story.goal_icon in pictures.GOALS:
+            pictures.GOALS[self.story.goal_icon](s, gx, gy, int(k * 0.8), dim=0.6 if locked else 1.0)
         else:
             self.draw_star(s, (gx, gy), k * 0.32, (120, 110, 70) if locked else (200, 170, 90))
         label = self.fonts["small"].render(self.story.goal_name, True, SOFT)
@@ -700,6 +754,8 @@ class Activity:
                 self.window = self._open_window(not (self.window.get_flags() & pygame.FULLSCREEN))
             elif k == pygame.K_m:
                 self.toggle_music()
+            elif k == pygame.K_b:
+                self.toggle_blank()
             elif k == pygame.K_c and self.camera is not None:
                 self.begin_calibration()
             elif k == pygame.K_d and self.camera is not None:
@@ -749,7 +805,9 @@ class Activity:
                 running = running and self.handle_event(e)
             now = time.time()
             dt, last = min(0.1, now - last), now
-            if self.state == "calibrate":
+            if self.blank:
+                pass
+            elif self.state == "calibrate":
                 self.update_calibration()
             elif self.state == "maze":
                 self.update_maze(dt, now)
@@ -761,7 +819,9 @@ class Activity:
                         action()
                         break
             s = self.canvas
-            if self.state == "calibrate":
+            if self.blank:
+                s.fill((0, 0, 0))
+            elif self.state == "calibrate":
                 self.draw_calibration(s)
             elif self.state == "title":
                 self.draw_title(s, now)
@@ -771,9 +831,13 @@ class Activity:
                 self.draw_card(s, now, ending=True)
             else:
                 self.draw_maze(s, now)
-            if self.message and now < self.message_until and self.state != "calibrate":
+            if self.message and now < self.message_until and self.state != "calibrate" and not self.blank:
                 draw_text(s, self.fonts["small"], self.message, (W // 2, H - 95), GOLD, anchor="midtop")
-            self.window.blit(pygame.transform.scale(s, self.window.get_size()), (0, 0))
+            size = self.window.get_size()
+            if size == (W, H):
+                self.window.blit(s, (0, 0))
+            else:  # smooth scaling: plain scaling drops rows and columns unevenly, so moving figures shimmer
+                self.window.blit(pygame.transform.smoothscale(s, size), (0, 0))
             pygame.display.flip()
             if self.rec:
                 self.rec.tick(now, s, self.camera.latest_frame() if self.camera else None, self.snapshot())

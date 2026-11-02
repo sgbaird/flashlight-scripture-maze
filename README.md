@@ -64,6 +64,7 @@ have not moved.
 |---|---|
 | **M** | Music off / on |
 | **S** | Scripture passage on the story card or ending (again to close) |
+| **B** | Blank (black) screen and pause, to read from a book; **B** again to go on |
 | **N** / **P** | Next / previous story |
 | **R** | New maze |
 | **C** | Recalibrate |

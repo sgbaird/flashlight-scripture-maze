@@ -34,6 +34,8 @@ class Story:
     card: int = 1
     player: Crop = (1, 0.5, 0.5, 0.36)
     goal: Optional[Crop] = None
+    goal_icon: Optional[str] = None  # drawn goal when there is no goal portrait: ark, tent, city (pictures.py)
+    scenery: Optional[str] = None    # a few dim drawings along the paths: reeds, waves, lions, sheep, palms
     size: str = "medium"       # maze size: small, medium, large
     color: Tuple[int, int, int] = (90, 140, 230)  # fallback figure colour
 
@@ -71,7 +73,7 @@ STORIES = [
                "and the lions did not hurt Daniel.",
         song=("A Child's Prayer", "a-childs-prayer"),
         cfm="Come Follow Me, November 9-15: Daniel 1-7",
-        player=(1, 0.48, 0.35, 0.2), card=5, color=(120, 90, 200),
+        player=(1, 0.48, 0.35, 0.2), card=5, scenery="lions", color=(120, 90, 200),
     ),
     Story(
         slug="shadrach-meshach-and-abed-nego",
@@ -106,7 +108,7 @@ STORIES = [
         ref="1 Samuel 17:37-50",
         ending="David trusted the Lord. He was brave because he knew God would help him.",
         song=("I Will Be Valiant", "i-will-be-valiant"),
-        items=("smooth stones", 5, "stone"), player=(1, 0.5, 0.56, 0.24), card=7, color=(90, 140, 230),
+        items=("smooth stones", 5, "stone"), player=(1, 0.5, 0.56, 0.24), card=7, goal_icon="tent", scenery="sheep", color=(90, 140, 230),
     ),
     Story(
         slug="noah-and-his-family",
@@ -116,7 +118,7 @@ STORIES = [
         ref="Genesis 6:13-22; 7:1-16",
         ending="Noah followed the Lord and built the ark. His family and the animals were safe.",
         song=("Follow the Prophet", "follow-the-prophet"),
-        items=("animals", 4, "heart"), player=(1, 0.56, 0.42, 0.27), card=5, color=(150, 110, 70),
+        items=("animals", 4, "animal"), player=(1, 0.56, 0.42, 0.27), card=5, goal_icon="ark", color=(150, 110, 70),
     ),
     Story(
         slug="baby-moses",
@@ -128,7 +130,7 @@ STORIES = [
         ending="Miriam watched over her baby brother. Pharaoh's daughter found Moses "
                "and kept him safe.",
         song=("I Am a Child of God", "i-am-a-child-of-god"),
-        size="small", player=(1, 0.56, 0.4, 0.28), card=5, goal=(6, 0.7, 0.3, 0.2), color=(220, 110, 160),
+        size="small", player=(1, 0.56, 0.4, 0.28), card=5, goal=(6, 0.7, 0.3, 0.2), scenery="reeds", color=(220, 110, 160),
     ),
     Story(
         slug="the-passover",
@@ -138,7 +140,7 @@ STORIES = [
         ref="Exodus 14:13-22",
         ending="The Lord parted the Red Sea, and the Israelites walked through on dry ground.",
         song=("I Will Follow God's Plan", "i-will-follow-gods-plan"),
-        size="large", player=(1, 0.47, 0.42, 0.3), card=11, color=(70, 120, 200),
+        size="large", player=(1, 0.47, 0.42, 0.3), card=11, scenery="waves", color=(70, 120, 200),
     ),
     Story(
         slug="ruth-and-naomi",
@@ -168,6 +170,6 @@ STORIES = [
         ref="Jonah 3:1-10",
         ending="Jonah obeyed the second time. The people of Nineveh listened and repented.",
         song=("Keep the Commandments", "keep-the-commandments"),
-        player=(1, 0.5, 0.4, 0.3), card=9, color=(60, 150, 170),
+        player=(1, 0.5, 0.4, 0.3), card=9, goal_icon="city", scenery="palms", color=(60, 150, 170),
     ),
 ]
