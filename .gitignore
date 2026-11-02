@@ -1,0 +1,9 @@
+# Church media downloaded by fetch_art.py: personal use only, never committed
+art/
+
+# This room's calibration
+calibration.yaml
+
+__pycache__/
+.pytest_cache/
+*.log

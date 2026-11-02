@@ -1,0 +1,606 @@
+"""Flashlight Scripture Mazes: guide a scripture story figure through a projected maze with a flashlight.
+
+    python game.py                     # camera 0, projector = last display
+    python game.py --camera 1          # pick the camera
+    python game.py --mouse             # no camera: the mouse is the flashlight
+    python game.py --story baby-moses  # start with one story
+
+Keys: N / P next / previous story, R new maze, M open the story's song, C recalibrate,
+D camera view, arrow keys move the walker, F11 fullscreen, Esc quit.
+"""
+import argparse
+import io
+import math
+import os
+import random
+import struct
+import sys
+import time
+import wave
+import webbrowser
+
+import pygame
+
+import art
+from maze import Maze, SIZES
+from stories import STORIES, SONGBOOK
+
+W, H = 1920, 1080
+FPS = 60
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+SKY = (8, 12, 30)
+STAR = (38, 44, 82)
+CORRIDOR = (20, 28, 58)
+WALL = (150, 120, 62)
+TEXT = (205, 195, 165)
+SOFT = (150, 145, 130)
+GOLD = (190, 155, 80)
+
+LEAD = 2.4        # the walker follows a light within this many cells of it...
+MAX_STEPS = 4     # ...if it can get there in this many steps
+SPEED = 3.2       # cells per second
+DWELL = 1.5       # seconds of light on a button to press it
+VERSE = ("“Thy word is a lamp unto my feet, and a light unto my path.”", "Psalm 119:105")
+
+
+# ----------------------------------------------------------------------------- sounds
+
+def _tones(notes, volume=0.25, rate=44100):
+    """WAV bytes of soft bell notes: list of (frequency, start, length) in seconds."""
+    total = max(s + l for _, s, l in notes)
+    buf = [0.0] * int(rate * total)
+    for f, start, length in notes:
+        i0, n = int(start * rate), int(length * rate)
+        for i in range(n):
+            t = i / rate
+            env = math.exp(-4.0 * t / length) * min(1.0, i / (0.005 * rate))
+            buf[i0 + i] += env * (math.sin(2 * math.pi * f * t) + 0.3 * math.sin(4 * math.pi * f * t))
+    peak = max(1e-6, max(abs(x) for x in buf))
+    data = struct.pack("<%dh" % len(buf), *(int(32767 * volume * x / peak) for x in buf))
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(data)
+    out.seek(0)
+    return out
+
+
+def make_sounds():
+    try:
+        return {
+            "collect": pygame.mixer.Sound(file=_tones([(784, 0, 0.35), (1175, 0.09, 0.5)])),
+            "goal": pygame.mixer.Sound(file=_tones([(523, 0, 0.6), (659, 0.15, 0.6), (784, 0.3, 0.6),
+                                                    (1047, 0.45, 1.2)])),
+            "press": pygame.mixer.Sound(file=_tones([(660, 0, 0.3)], 0.18)),
+            "locked": pygame.mixer.Sound(file=_tones([(330, 0, 0.4)], 0.15)),
+        }
+    except pygame.error:
+        return {}
+
+
+# ----------------------------------------------------------------------------- drawing helpers
+
+def wrap(font, text, width):
+    lines, line = [], ""
+    for word in text.split():
+        trial = (line + " " + word).strip()
+        if font.size(trial)[0] <= width:
+            line = trial
+        else:
+            lines.append(line)
+            line = word
+    if line:
+        lines.append(line)
+    return lines
+
+
+def draw_text(surface, font, text, pos, color=TEXT, width=None, anchor="topleft", spacing=1.15):
+    lines = wrap(font, text, width) if width else [text]
+    x, y = pos
+    for ln in lines:
+        img = font.render(ln, True, color)
+        r = img.get_rect(**{anchor: (x, y)})
+        surface.blit(img, r)
+        y += int(font.get_linesize() * spacing)
+    return y
+
+
+def draw_icon(surface, kind, center, size):
+    x, y = center
+    s = size
+    if kind == "rope":
+        for k in range(3):
+            pygame.draw.circle(surface, (150, 110, 60), (x, y), int(s * (0.45 - 0.12 * k)), max(2, s // 12))
+    elif kind == "stone":
+        pygame.draw.ellipse(surface, (120, 120, 125), (x - s * 0.45, y - s * 0.3, s * 0.9, s * 0.6))
+        pygame.draw.ellipse(surface, (155, 155, 160), (x - s * 0.25, y - s * 0.22, s * 0.35, s * 0.18))
+    elif kind == "vegetable":
+        pygame.draw.polygon(surface, (200, 110, 40), [(x - s * 0.15, y - s * 0.2), (x + s * 0.15, y - s * 0.2),
+                                                       (x, y + s * 0.45)])
+        for dx in (-0.12, 0, 0.12):
+            pygame.draw.ellipse(surface, (70, 140, 60), (x + s * dx - s * 0.06, y - s * 0.48, s * 0.12, s * 0.3))
+    elif kind == "grain":
+        pygame.draw.line(surface, (160, 130, 60), (x, y + s * 0.45), (x, y - s * 0.4), max(2, s // 14))
+        for k in range(4):
+            for side in (-1, 1):
+                pygame.draw.ellipse(surface, (190, 150, 70),
+                                    (x + side * s * 0.12 - s * 0.08, y - s * 0.38 + k * s * 0.17, s * 0.16, s * 0.12))
+    else:  # heart
+        r = s * 0.22
+        pygame.draw.circle(surface, (190, 80, 110), (int(x - r), int(y - r * 0.4)), int(r))
+        pygame.draw.circle(surface, (190, 80, 110), (int(x + r), int(y - r * 0.4)), int(r))
+        pygame.draw.polygon(surface, (190, 80, 110), [(x - 2 * r, y - r * 0.2), (x + 2 * r, y - r * 0.2),
+                                                       (x, y + s * 0.42)])
+
+
+class DwellButton:
+    """A circle pressed by holding the flashlight (or the mouse) on it."""
+
+    def __init__(self, center, radius, label):
+        self.center, self.radius, self.label = center, radius, label
+        self.progress = 0.0
+
+    def update(self, light, dt):
+        inside = light is not None and math.hypot(light[0] - self.center[0], light[1] - self.center[1]) <= self.radius
+        self.progress = min(1.0, self.progress + dt / DWELL) if inside else max(0.0, self.progress - dt)
+        if self.progress >= 1.0:
+            self.progress = 0.0
+            return True
+        return False
+
+    def draw(self, surface, font, now):
+        x, y = self.center
+        r = self.radius + 4 * math.sin(now * 2.5)
+        pygame.draw.circle(surface, (30, 38, 75), (x, y), int(r))
+        pygame.draw.circle(surface, GOLD, (x, y), int(r), 4)
+        if self.progress > 0:
+            rect = pygame.Rect(0, 0, 2 * r + 24, 2 * r + 24)
+            rect.center = (x, y)
+            pygame.draw.arc(surface, (220, 200, 140), rect, math.pi / 2, math.pi / 2 + 2 * math.pi * self.progress, 8)
+        img = font.render(self.label, True, TEXT)
+        surface.blit(img, img.get_rect(center=(x, y)))
+
+
+# ----------------------------------------------------------------------------- the game
+
+class Game:
+    def __init__(self, args):
+        self.args = args
+        pygame.init()
+        self.window = self._open_window(not args.window)
+        pygame.display.set_caption("Flashlight Scripture Mazes")
+        self.canvas = pygame.Surface((W, H))
+        self.clock = pygame.time.Clock()
+        try:
+            pygame.mixer.init()
+            self.sounds = make_sounds()
+        except pygame.error:
+            self.sounds = {}
+        self.fonts = {k: pygame.font.SysFont("georgia,timesnewroman,serif", v) for k, v in
+                      (("huge", 84), ("big", 58), ("mid", 40), ("small", 30))}
+        self.stars = [(random.randrange(W), random.randrange(H), random.choice((1, 1, 2))) for _ in range(140)]
+        self.story_index = 0
+        if args.story:
+            slugs = [s.slug for s in STORIES]
+            if args.story in slugs:
+                self.story_index = slugs.index(args.story)
+        self.camera = None
+        self.calibration_path = args.calibration
+        self.mouse_seen = -10.0
+        self.message, self.message_until = "", 0.0
+        self.state = "title"
+        self.button = DwellButton((W // 2, int(H * 0.72)), 110, "Begin")
+        self._start_camera()
+        if not args.no_music:
+            self.open_song()
+
+    # --- setup
+    def _open_window(self, fullscreen):
+        sizes = pygame.display.get_desktop_sizes()
+        display = self.args.display if self.args.display is not None else len(sizes) - 1
+        display = max(0, min(display, len(sizes) - 1))
+        self.display = display
+        if fullscreen:
+            return pygame.display.set_mode(sizes[display], pygame.FULLSCREEN, display=display)
+        return pygame.display.set_mode((W // 2, H // 2), pygame.RESIZABLE, display=display)
+
+    def _start_camera(self):
+        if self.args.mouse:
+            return
+        import flashlight
+        cap = flashlight.open_camera(self.args.camera)
+        if cap is None:
+            self.say("No camera %d found: the mouse is the flashlight." % self.args.camera, 8)
+            return
+        self.camera = flashlight.Camera(cap)
+        self.camera.start()
+        corners = flashlight.load_calibration(self.calibration_path)
+        if corners is None:
+            self.begin_calibration()
+        else:
+            self.camera.detector = flashlight.SpotDetector(corners, (W, H))
+
+    def say(self, text, seconds=4.0):
+        self.message, self.message_until = text, time.time() + seconds
+
+    @property
+    def story(self):
+        return STORIES[self.story_index]
+
+    def open_song(self):
+        try:
+            webbrowser.open(self.story.song_url)
+            self.say("Opened “%s” in the browser." % self.story.song[0])
+        except Exception:
+            self.say("Could not open the browser. Songs: " + SONGBOOK, 8)
+
+    def reset_detector(self):
+        if self.camera and self.camera.detector:
+            self.camera.detector.reset()
+
+    # --- calibration: show black, then white, and find the bright quadrilateral
+    def begin_calibration(self):
+        self.state = "calibrate"
+        self.cal_phase, self.cal_t0, self.cal_frames = "black", time.time(), {"black": [], "white": []}
+
+    def update_calibration(self):
+        import cv2
+        import numpy as np
+        import flashlight
+        t = time.time() - self.cal_t0
+        if self.cal_phase in ("black", "white") and t > 0.9:
+            frame = self.camera.latest_frame()
+            if frame is not None:
+                self.cal_frames[self.cal_phase].append(frame.astype(np.float32))
+            if t > 1.5:
+                if self.cal_phase == "black":
+                    self.cal_phase, self.cal_t0 = "white", time.time()
+                else:
+                    black = np.mean(self.cal_frames["black"], 0).astype(np.uint8)
+                    white = np.mean(self.cal_frames["white"], 0).astype(np.uint8)
+                    corners = flashlight.find_projection(black, white)
+                    if corners is None:
+                        self.camera.detector = None
+                        self.say("Calibration failed: make sure the camera sees the whole picture, then press C.", 10)
+                    else:
+                        flashlight.save_calibration(self.calibration_path, corners, black.shape)
+                        self.camera.detector = flashlight.SpotDetector(corners, (W, H))
+                        self.say("Calibrated. Press D to see the camera view.", 5)
+                    self.state = "title"
+                    self.button = DwellButton((W // 2, int(H * 0.72)), 110, "Begin")
+
+    # --- light source: flashlight, or the mouse when it moved recently
+    def light(self):
+        now = time.time()
+        if self.camera is None or now - self.mouse_seen < 2.0:
+            if pygame.mouse.get_focused():
+                mx, my = pygame.mouse.get_pos()
+                ww, wh = self.window.get_size()
+                return (mx * W / ww, my * H / wh)
+            return None
+        return self.camera.recent_spot()
+
+    # --- levels
+    def show_card(self):
+        self.state = "card"
+        self.button = DwellButton((int(W * 0.78), int(H * 0.8)), 105, "Start")
+        self.reset_detector()
+
+    def start_maze(self, seed=None):
+        st = self.story
+        cols, rows = SIZES.get(self.args.size or st.size, SIZES["medium"])
+        self.maze = Maze(cols, rows, seed=seed)
+        self.cell = min((W - 120) / cols, (H - 170) / rows)
+        self.ox = (W - self.cell * cols) / 2
+        self.oy = 130 + (H - 150 - self.cell * rows) / 2
+        count = st.items[1] if st.items else 0
+        self.items = self.maze.place_items(count)
+        self.collected = 0
+        self.cur = self.maze.start
+        self.pos = list(self.center(self.cur))
+        self.route = []
+        self.following = 0.0
+        self.last_light = time.time()
+        self.celebrate = None
+        self.maze_surface = self.render_maze()
+        self.walker = art.portrait(st, "player", int(self.cell * 0.82))
+        self.goal_img = art.portrait(st, "goal", int(self.cell * 0.82)) if st.goal else None
+        self.state = "maze"
+        self.reset_detector()
+
+    def next_story(self, step=1):
+        self.story_index = (self.story_index + step) % len(STORIES)
+        self.show_card()
+
+    def center(self, cell):
+        return (self.ox + (cell[0] + 0.5) * self.cell, self.oy + (cell[1] + 0.5) * self.cell)
+
+    def cell_at(self, x, y):
+        c, r = int((x - self.ox) // self.cell), int((y - self.oy) // self.cell)
+        return (c, r) if self.maze.inside((c, r)) else None
+
+    def render_maze(self):
+        s = pygame.Surface((W, H))
+        self.draw_sky(s)
+        m, k = self.maze, self.cell
+        pygame.draw.rect(s, CORRIDOR, (self.ox, self.oy, k * m.cols, k * m.rows))
+        t = max(6, int(k * 0.08))
+
+        def wall(a, b):  # a wall segment with rounded ends
+            pygame.draw.line(s, WALL, a, b, t)
+            for p in (a, b):
+                pygame.draw.circle(s, WALL, (int(p[0]), int(p[1])), t // 2)
+
+        for c in range(m.cols):
+            for r in range(m.rows):
+                x, y = self.ox + c * k, self.oy + r * k
+                if r == 0 or not m.is_open((c, r), (c, r - 1)):
+                    wall((x, y), (x + k, y))
+                if c == 0 or not m.is_open((c, r), (c - 1, r)):
+                    wall((x, y), (x, y + k))
+                if r == m.rows - 1:
+                    wall((x, y + k), (x + k, y + k))
+                if c == m.cols - 1:
+                    wall((x + k, y), (x + k, y + k))
+        st = self.story
+        draw_text(s, self.fonts["big"], st.title, (60, 30))
+        draw_text(s, self.fonts["small"], st.task, (60, 95), SOFT)
+        return s
+
+    def draw_sky(self, s):
+        s.fill(SKY)
+        for x, y, r in self.stars:
+            pygame.draw.circle(s, STAR, (x, y), r)
+
+    # --- per-frame updates
+    def update_maze(self, dt, now):
+        light = self.light()
+        if self.celebrate is not None:
+            if now - self.celebrate > 2.5:
+                self.state = "done"
+                self.button = DwellButton((int(W * 0.78), int(H * 0.82)), 105, "Next")
+                self.reset_detector()
+            return
+        if light is not None:
+            self.last_light = now
+            near = math.hypot(light[0] - self.pos[0], light[1] - self.pos[1]) <= LEAD * self.cell
+            target = self.cell_at(*light)
+            if near and target is not None and target != (self.route[-1] if self.route else self.cur):
+                path = self.maze.path(self.cur, target, limit=MAX_STEPS)
+                if path is not None:
+                    self.route = path[1:]
+            self.following = min(1.0, self.following + dt * 4) if near else max(0.0, self.following - dt * 2)
+        else:
+            self.following = max(0.0, self.following - dt * 2)
+        self.walk(dt)
+
+    def walk(self, dt):
+        step = SPEED * self.cell * dt
+        while self.route and step > 0:
+            tx, ty = self.center(self.route[0])
+            dx, dy = tx - self.pos[0], ty - self.pos[1]
+            d = math.hypot(dx, dy)
+            if d <= step:
+                self.pos = [tx, ty]
+                step -= d
+                self.arrive(self.route.pop(0))
+            else:
+                self.pos[0] += dx / d * step
+                self.pos[1] += dy / d * step
+                step = 0
+
+    def arrive(self, cell):
+        self.cur = cell
+        if cell in self.items:
+            self.items.remove(cell)
+            self.collected += 1
+            self.play("collect")
+        if cell == self.maze.goal:
+            if self.items:
+                self.play("locked")
+                name = self.story.items[0]
+                self.say("Gather %d more %s first!" % (len(self.items), name), 3)
+            else:
+                self.route = []
+                self.celebrate = time.time()
+                self.play("goal")
+
+    def move_key(self, dc, dr):
+        if self.state == "maze" and self.celebrate is None and not self.route:
+            n = (self.cur[0] + dc, self.cur[1] + dr)
+            if self.maze.inside(n) and self.maze.is_open(self.cur, n):
+                self.route = [n]
+
+    def play(self, name):
+        snd = self.sounds.get(name)
+        if snd:
+            snd.play()
+
+    # --- screens
+    def draw_title(self, s, now):
+        self.draw_sky(s)
+        draw_text(s, self.fonts["huge"], "Flashlight Scripture Mazes", (W // 2, 170), TEXT, anchor="midtop")
+        draw_text(s, self.fonts["mid"], VERSE[0], (W // 2, 330), SOFT, anchor="midtop")
+        draw_text(s, self.fonts["small"], VERSE[1], (W // 2, 390), SOFT, anchor="midtop")
+        cfm = self.story.cfm
+        if cfm:
+            draw_text(s, self.fonts["small"], cfm, (W // 2, 480), GOLD, anchor="midtop")
+        draw_text(s, self.fonts["small"], "Shine your flashlight on the circle and hold it there.",
+                  (W // 2, int(H * 0.88)), SOFT, anchor="midtop")
+        self.button.draw(s, self.fonts["mid"], now)
+
+    def draw_card(self, s, now, ending=False):
+        self.draw_sky(s)
+        st = self.story
+        pic = art.card(st, (int(W * 0.5), int(H * 0.72)))
+        x0 = 70
+        if pic is not None:
+            r = pic.get_rect(midleft=(x0, H // 2))
+            s.blit(pic, r)
+            pygame.draw.rect(s, GOLD, r.inflate(10, 10), 4)
+            x0 = r.right + 60
+        width = W - x0 - 70
+        y = draw_text(s, self.fonts["big"], st.title, (x0, 110), TEXT, width)
+        if st.cfm and not ending:
+            y = draw_text(s, self.fonts["small"], st.cfm, (x0, y + 10), GOLD, width)
+        body = st.ending if ending else st.task
+        y = draw_text(s, self.fonts["mid"], body, (x0, y + 30), TEXT, width)
+        y = draw_text(s, self.fonts["small"], st.ref, (x0, y + 15), SOFT, width)
+        if st.items and not ending:
+            y = draw_text(s, self.fonts["small"], "Gather %d %s on the way." % (st.items[1], st.items[0]),
+                          (x0, y + 15), SOFT, width)
+        draw_text(s, self.fonts["small"], "♪ %s  (press M to open the song)" % st.song[0],
+                  (x0, y + 30), SOFT, width)
+        self.button.draw(s, self.fonts["mid"], now)
+
+    def draw_maze(self, s, now):
+        s.blit(self.maze_surface, (0, 0))
+        k = self.cell
+        for cell in self.items:
+            draw_icon(s, self.story.items[2], [int(v) for v in self.center(cell)], int(k * 0.6))
+        gx, gy = [int(v) for v in self.center(self.maze.goal)]
+        locked = bool(self.items)
+        glow = int(k * (0.5 + 0.04 * math.sin(now * 3)))
+        pygame.draw.circle(s, (60, 55, 40) if locked else (95, 85, 50), (gx, gy), glow)
+        if self.goal_img is not None:
+            s.blit(self.goal_img, self.goal_img.get_rect(center=(gx, gy)))
+        else:
+            self.draw_star(s, (gx, gy), k * 0.32, (120, 110, 70) if locked else (200, 170, 90))
+        label = self.fonts["small"].render(self.story.goal_name, True, SOFT)
+        s.blit(label, label.get_rect(midtop=(gx, gy + k * 0.42)) if gy + k < H else label.get_rect(midbottom=(gx, gy - k * 0.42)))
+        if self.story.items:
+            name, count, icon = self.story.items
+            draw_icon(s, icon, (W - 260, 70), 48)
+            draw_text(s, self.fonts["mid"], "%d / %d" % (self.collected, count), (W - 220, 48), TEXT)
+        # the walker, with a soft ring while it follows the light
+        px, py = int(self.pos[0]), int(self.pos[1])
+        if self.following > 0:
+            pygame.draw.circle(s, (70, 75, 120), (px, py), int(k * 0.5 + 6), max(2, int(6 * self.following)))
+        s.blit(self.walker, self.walker.get_rect(center=(px, py)))
+        if now - self.last_light > 6 and self.celebrate is None:
+            ring = int(k * (0.6 + 0.08 * math.sin(now * 4)))
+            pygame.draw.circle(s, (90, 90, 130), (px, py), ring, 3)
+            draw_text(s, self.fonts["small"], "Shine your light on %s" % self.story.player_name,
+                      (W // 2, H - 48), SOFT, anchor="midtop")
+        if self.celebrate is not None:
+            t = now - self.celebrate
+            for i in range(12):
+                a = i * math.pi / 6 + t * 0.6
+                r0, r1 = k * 0.6, k * (0.8 + t * 1.2)
+                pygame.draw.line(s, (200, 180, 110), (gx + math.cos(a) * r0, gy + math.sin(a) * r0),
+                                 (gx + math.cos(a) * r1, gy + math.sin(a) * r1), 4)
+
+    @staticmethod
+    def draw_star(s, c, r, color):
+        pts = []
+        for i in range(10):
+            a = -math.pi / 2 + i * math.pi / 5
+            rr = r if i % 2 == 0 else r * 0.45
+            pts.append((c[0] + math.cos(a) * rr, c[1] + math.sin(a) * rr))
+        pygame.draw.polygon(s, color, pts)
+
+    def draw_calibration(self, s):
+        s.fill((0, 0, 0) if self.cal_phase == "black" else (255, 255, 255))
+
+    # --- main loop
+    def handle_event(self, e):
+        if e.type == pygame.QUIT:
+            return False
+        if e.type == pygame.MOUSEMOTION or e.type == pygame.MOUSEBUTTONDOWN:
+            self.mouse_seen = time.time()
+        if e.type == pygame.KEYDOWN:
+            k = e.key
+            if k == pygame.K_ESCAPE:
+                return False
+            if k == pygame.K_F11:
+                self.window = self._open_window(not (self.window.get_flags() & pygame.FULLSCREEN))
+            elif k == pygame.K_m:
+                self.open_song()
+            elif k == pygame.K_c and self.camera is not None:
+                self.begin_calibration()
+            elif k == pygame.K_d and self.camera is not None:
+                self.camera.show_debug = not self.camera.show_debug
+            elif k == pygame.K_n:
+                self.next_story(1)
+            elif k == pygame.K_p:
+                self.next_story(-1)
+            elif k == pygame.K_r and self.state == "maze":
+                self.start_maze()
+            elif k in (pygame.K_SPACE, pygame.K_RETURN):
+                self.advance()
+            elif k == pygame.K_LEFT:
+                self.move_key(-1, 0)
+            elif k == pygame.K_RIGHT:
+                self.move_key(1, 0)
+            elif k == pygame.K_UP:
+                self.move_key(0, -1)
+            elif k == pygame.K_DOWN:
+                self.move_key(0, 1)
+        return True
+
+    def advance(self):
+        self.play("press")
+        if self.state == "title":
+            self.show_card()
+        elif self.state == "card":
+            self.start_maze(seed=self.args.seed)
+        elif self.state == "done":
+            self.next_story(1)
+
+    def run(self):
+        running = True
+        last = time.time()
+        while running:
+            for e in pygame.event.get():
+                running = running and self.handle_event(e)
+            now = time.time()
+            dt, last = min(0.1, now - last), now
+            if self.state == "calibrate":
+                self.update_calibration()
+            elif self.state == "maze":
+                self.update_maze(dt, now)
+            elif self.button.update(self.light(), dt):
+                self.advance()
+            s = self.canvas
+            if self.state == "calibrate":
+                self.draw_calibration(s)
+            elif self.state == "title":
+                self.draw_title(s, now)
+            elif self.state == "card":
+                self.draw_card(s, now)
+            elif self.state == "done":
+                self.draw_card(s, now, ending=True)
+            else:
+                self.draw_maze(s, now)
+            if self.message and now < self.message_until and self.state != "calibrate":
+                draw_text(s, self.fonts["small"], self.message, (W // 2, H - 95), GOLD, anchor="midtop")
+            self.window.blit(pygame.transform.scale(s, self.window.get_size()), (0, 0))
+            pygame.display.flip()
+            self.clock.tick(FPS)
+        if self.camera:
+            self.camera.stop()
+        pygame.quit()
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--camera", type=int, default=int(os.environ.get("MAZE_CAMERA", 0)),
+                   help="camera index (default 0, or MAZE_CAMERA)")
+    p.add_argument("--display", type=int, default=None, help="display for the game (default: the last one)")
+    p.add_argument("--calibration", default=os.path.join(HERE, "calibration.yaml"),
+                   help="projection corners in the camera image (projector_points, as in balloon-pop-game)")
+    p.add_argument("--mouse", action="store_true", help="no camera; the mouse is the flashlight")
+    p.add_argument("--window", action="store_true", help="a window instead of fullscreen")
+    p.add_argument("--no-music", action="store_true", help="do not open the song in the browser")
+    p.add_argument("--story", help="start with this story (its slug in stories.py)")
+    p.add_argument("--size", choices=sorted(SIZES), help="maze size for every story")
+    p.add_argument("--seed", type=int, help="maze random seed")
+    return p.parse_args(argv)
+
+
+if __name__ == "__main__":
+    Game(parse_args()).run()
+    sys.exit(0)
