@@ -3,7 +3,9 @@ import re
 from maze import SIZES
 from stories import STORIES
 
-ICONS = {"rope", "stone", "vegetable", "grain", "heart"}
+ICONS = {"rope", "stone", "vegetable", "grain", "heart", "animal"}
+GOAL_ICONS = {"ark", "tent", "city"}                               # pictures.GOALS
+SCENERY = {"reeds", "waves", "lions", "sheep", "palms"}            # pictures.SCENERY
 
 
 def test_stories_are_complete():
@@ -17,6 +19,7 @@ def test_stories_are_complete():
         if s.items:
             name, count, icon = s.items
             assert icon in ICONS and 1 <= count <= 6
+        assert s.goal_icon in GOAL_ICONS | {None} and s.scenery in SCENERY | {None}
         for crop in (s.player, s.goal):
             if crop:
                 n, cx, cy, r = crop
