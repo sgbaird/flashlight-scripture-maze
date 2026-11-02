@@ -69,3 +69,9 @@ and `ME-EN-250/me-en-250-private`, each with its own separate login.
   hand (`gh workflow run codex-keepalive.yml -R sgbaird/flashlight-scripture-maze`), and then delete the local
   `auth.json`. Never use that CODEX_HOME for local work, and never reuse another repository's CI login: the CI
   copy rotates its tokens, and two holders of one login log each other out.
+- If `npx` fails with "Could not read package.json" under `npm-cache\_npx` (a broken npx cache, as on 2026-11-01),
+  install the same version into a folder and run it from there:
+  `npm install --prefix $env:TEMP\codex-cli @openai/codex@0.165.0`, then
+  `& $env:TEMP\codex-cli
+ode_modules\.bin\codex.cmd login` (with `CODEX_HOME` set as above). Delete the folder
+  afterwards.
