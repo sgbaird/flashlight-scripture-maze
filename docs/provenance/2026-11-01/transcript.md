@@ -600,3 +600,117 @@ Still missing. Checking how those messages are stored in the raw log:
 
 > `Bash`: Find how mid-turn messages are stored
 
+## Claude
+
+They're stored as `queued_command` attachment entries. Adding those:
+
+> `Bash`: Include queued messages, regenerate, compress logs
+
+## Claude
+
+All three of your mid-turn messages are in now, and the logs compress to about 435 KB. I'll read through the transcript before it goes into the public repository:
+
+> `Bash`: Scan transcript for personal or secret content
+
+## Claude
+
+Only the Windows user folder name appears, inside long temp paths. I'll shorten those to `<scratchpad>` and `<memory>` for readability, then add a short README for the folder:
+
+> `Bash`: Shorten temp and memory paths in the transcript
+
+> `Write`: <repo>/docs\provenance\2026-11-01\README.md
+
+## Claude
+
+Adding two rules to `AGENTS.md` so future sessions follow them: call it an activity, and handle recordings and camera frames privately.
+
+> `Bash`: Read the top of AGENTS.md
+
+> `Bash`: Update AGENTS.md, rerun checks, show changes
+
+## Claude
+
+Tests pass, and `art/` (pictures, songs, verses) is still ignored. Committing on a branch in two commits (changes, then provenance), then pushing and opening the PR:
+
+> `Bash`: Create branch, commit changes and provenance, push
+
+## Sterling (while Claude was working)
+
+Actual animals instead of hearts, actual ark instead of just text "the ark". Might be nice to have some icons like reeds at some different spots for ones like baby Moses. Doesn't need to be extravagent, just a little bit here or there. Might be nice to have a "blank the screen" option so that we could pause and read from a physical book. Also, not sure if I mentioned, but there was a bit of aliasing or something like that (choppy movement) when moving the characters, sometimes
+
+## Claude
+
+Pushed. Opening the pull request, then I'll work through your new list on the same branch.
+
+> `Bash`: Open the pull request
+
+> `Bash`: Read icon drawing and maze drawing code
+
+> `Bash`: Time nearest vs smooth scaling and recorder grab
+
+> `Write`: <repo>/pictures.py
+
+## Claude
+
+Now wiring these into the stories and the maze screen:
+
+> `Bash`: Read start_maze, render_maze and maze API
+
+> `Write`: <scratchpad>\patch_pictures.py
+
+> `Bash`: Apply story fields and maze drawing changes
+
+## Claude
+
+My portrait-crop edit changed those lines, so the patch didn't apply (nothing was written). Checking the current lines:
+
+> `Bash`: Show current card lines in stories.py
+
+> `Bash`: Fix patch targets and apply
+
+## Claude
+
+Story settings are in. Now the blank screen, smooth scaling and the threaded recorder. Here's the main loop:
+
+> `Bash`: Read main loop and Recorder class
+
+> `Write`: <scratchpad>\patch_blank.py
+
+> `Bash`: Apply blank screen, smooth scaling, threaded recorder
+
+> `Bash`: Show the failing test
+
+> `Bash`: Read the stories test
+
+## Claude
+
+The story test lists the allowed item icons. Adding `animal`, plus checks that each goal picture and scenery name exists:
+
+> `Bash`: Update stories test and rerun all tests
+
+## Claude
+
+Tests pass. Now rendering the mazes that changed, to look at the drawings:
+
+> `Bash`: Render changed mazes and an icon close-up
+
+> `Bash`: Fix integer size and re-render
+
+> `Read`: <scratchpad>\icons.png
+
+> `Read`: <scratchpad>\mazes.png
+
+## Claude
+
+Everything draws and reads clearly. One problem: David's sheep are as bright as the stones, so children may try to collect them. I'll draw all scenery at about 55% strength so it reads as background:
+
+> `Bash`: Dim scenery, re-render David, test blank toggle
+
+> `Read`: <scratchpad>\david.png
+
+## Claude
+
+The sheep now sit faintly in the background, and the stones stand out as the things to gather. Updating the docs, then committing and pushing to the PR:
+
+> `Bash`: Update docs, commit and push to the PR branch
+
