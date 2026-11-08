@@ -119,3 +119,40 @@ def test_still_bright_patch_fades_into_background():
         t += 0.1
     seen = [det.process(scene(spot=(1300, 400)), t + 0.033 * i) for i in range(1500)]
     assert seen[0] is not None and seen[-1] is None
+
+
+def test_reset_from_another_thread_is_done_at_the_next_frame():
+    # resetting cleared the background while the camera thread was mid-frame and crashed it (2026-11-08)
+    det = SpotDetector(CORNERS, (1920, 1080))
+    det.process(scene(), now=0.0)
+    det.reset()
+    assert det.bg is not None                      # nothing cleared under the camera thread's feet
+    assert det.process(scene(spot=(900, 500)), now=5.0) is None   # starts over: settles again
+    assert det.process(scene(spot=(900, 500)), now=5.1) is None
+
+
+def test_camera_thread_survives_a_failing_detector():
+    import time as _time
+
+    class Cap:
+        def read(self):
+            _time.sleep(0.01)
+            return True, np.zeros((480, 640, 3), np.uint8)
+
+        def release(self):
+            pass
+
+    class Broken:
+        def process(self, frame, now):
+            raise TypeError("boom")
+
+        def reset(self):
+            pass
+
+    cam = flashlight.Camera(Cap())
+    cam.detector = Broken()
+    cam.start()
+    _time.sleep(0.2)
+    assert cam.is_alive() and cam.errors > 1
+    cam.running = False
+    cam.join(timeout=1)

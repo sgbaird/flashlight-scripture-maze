@@ -127,10 +127,16 @@ class SpotDetector:
         self.screen_size, self.work = screen_size, work
         dst = np.array([[0, 0], [work[0], 0], [work[0], work[1]], [0, work[1]]], np.float32)
         self.H = cv2.getPerspectiveTransform(order_corners(corners), dst)
-        self.reset()
+        self._forget()
 
     def reset(self):
-        """Forget the background (call when the projected picture changes a lot)."""
+        """Forget the background (call when the projected picture changes a lot). Safe to call from another
+        thread: the camera thread does the forgetting at its next frame. (Clearing the background directly
+        while that thread was in the middle of a frame crashed it on 2026-11-08, and the flashlight stopped.)"""
+        self.forget = True
+
+    def _forget(self):
+        self.forget = False
         self.bg = None
         self.since = None   # time of the first frame after a reset
         self.pos = None
@@ -139,6 +145,8 @@ class SpotDetector:
     def process(self, frame, now=None):
         """Spot centre in screen coordinates for one camera frame, or None."""
         now = time.time() if now is None else now
+        if self.forget:
+            self._forget()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
         warped = cv2.warpPerspective(gray, self.H, self.work)
         warped = cv2.GaussianBlur(warped, (5, 5), 0).astype(np.float32)
@@ -213,6 +221,7 @@ class Camera(threading.Thread):
         self.show_debug = False
         self.lock = threading.Lock()
         self.running = True
+        self.errors = 0           # frames the detector failed on (the thread keeps going)
 
     def run(self):
         while self.running:
@@ -225,7 +234,12 @@ class Camera(threading.Thread):
                 self.frame = frame
                 det = self.detector
             if det is not None:
-                pos = det.process(frame, now)
+                try:
+                    pos = det.process(frame, now)
+                except Exception:   # one bad frame must not stop the camera for the rest of the session
+                    self.errors += 1
+                    det.reset()
+                    pos = None
                 if pos is not None:
                     self.spot = (pos[0], pos[1], now)
             if self.show_debug:

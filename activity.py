@@ -378,6 +378,8 @@ class Activity:
             info["spot"] = r(self.camera.recent_spot())
             det = self.camera.detector
             info["det"] = det.stats if det is not None else None
+            if not self.camera.is_alive() or self.camera.errors:
+                info["camera"] = {"alive": self.camera.is_alive(), "errors": self.camera.errors}
         if self.state == "maze":
             info.update(cell=list(self.cur), pos=r(self.pos), route=[list(c) for c in self.route],
                         following=round(self.following, 2), collected=self.collected,
