@@ -13,23 +13,31 @@ playing softly (the instrumental accompaniment, without the words).
 
 1. **Title screen.** Hold the flashlight on the circle to begin.
 2. **Story card.** The story's picture, what to do, the scripture reference and the song, which plays
-   softly in the background (**M** turns the music off and on). Hold the light on **Read** for the
-   scripture passage itself (**More** for the next page, **Back** to return), or on **Start**. A button
-   counts the light only after it has been off the button for a moment, so a light left where the last
-   button was does not press the next one.
-3. **The maze.** Shine the light near the figure, a little ahead of where it should go, and it walks
+   softly in the background (**M** turns the music off and on). Hold the light on **Story** to step
+   through the story as the book tells it, on **Read** for the scripture passage itself (**More** for the
+   next page, **Back** to return), or on **Start**. A button counts the light only after it has been off
+   the button for a moment, so a light left where the last button was does not press the next one.
+3. **Story pages.** The *Old Testament Stories* chapter one panel at a time: its picture and words, with
+   **Next** and **Back**. The verses a panel cites are buttons too (e.g. **Jeremiah 38:6**): hold the light on
+   one to read those verses, then **Back** to the page. **Next** on the last page goes to the maze.
+4. **The maze.** Shine the light near the figure, a little ahead of where it should go, and it walks
    there along the paths (it follows a light up to about two squares away and never walks through
    walls). Some stories have things to gather on the way (ropes, smooth stones, grain...) before the
    goal opens.
-4. **The ending.** The story's picture again with how the story ends. Hold the light on **Next** for
+5. **The ending.** The story's picture again with how the story ends. Hold the light on **Next** for
    the next story (or **Read** for the passage).
+
+**Map**, in the bottom left corner (top right in the maze), goes anywhere: this story's card, each story
+page (with its picture), the passage and the maze (back where you left it), or any other story (its
+portrait and a word or two). **Back** returns to where you were.
 
 | Story | Scripture | Gather | Song |
 |---|---|---|---|
-| Jeremiah in the Dungeon (Come Follow Me, Oct 26–Nov 1) | Jeremiah 38:6–13 | 3 ropes | Follow the Prophet |
-| Daniel and the Lions' Den (Nov 9–15) | Daniel 6 | | A Child's Prayer |
+| Daniel and His Friends (Come Follow Me, Nov 9–15) | Daniel 1 | 4 vegetables | The Word of Wisdom |
+| Daniel and the King's Dream (Nov 9–15) | Daniel 2 | | Search, Ponder, and Pray |
 | The Fiery Furnace (Nov 9–15) | Daniel 3 | | Stand for the Right |
-| Daniel and His Friends (Nov 9–15) | Daniel 1 | 4 vegetables | The Word of Wisdom |
+| Daniel and the Lions' Den (Nov 9–15) | Daniel 6 | | A Child's Prayer |
+| Jeremiah in the Dungeon (Oct 26–Nov 1) | Jeremiah 38:6–13 | 3 ropes | Follow the Prophet |
 | David's Five Smooth Stones | 1 Samuel 17 | 5 stones | I Will Be Valiant |
 | Noah's Ark | Genesis 6–7 | 4 animals | Follow the Prophet |
 | Baby Moses | Exodus 2 | | I Am a Child of God |
@@ -53,9 +61,11 @@ python fetch_art.py            # download the story pictures, scripture passages
 python activity.py --camera 1  # pick your camera; it opens on the last display (the projector)
 ```
 
-On the first run (and whenever you press **C**) the activity calibrates itself: it flashes the screen black
-and then white and finds the projected picture in the camera image. Keep people out of the camera's
-view for those three seconds. The corners are saved in `calibration.yaml`. The balloon game's
+On the first run (and whenever you press **C**) the activity calibrates itself: it shows a black screen and
+then four white squares, and finds them in the camera image (four squares rather than a white screen,
+which lights up the ceiling and walls as much as the picture). Keep people and the flashlight out of the
+picture for those few seconds. It waits for the projector to show the activity, starts only while the
+activity's window is in front, and tries up to three times. The corners are saved in `calibration.yaml`. The balloon game's
 `projector_calibration.yaml` from [sgbaird/balloon-pop-game](https://github.com/sgbaird/balloon-pop-game)
 has the same format (`--calibration path/to/projector_calibration.yaml`) if the camera and projector
 have not moved.
@@ -63,7 +73,10 @@ have not moved.
 | Key | |
 |---|---|
 | **M** | Music off / on |
-| **S** | Scripture passage on the story card or ending (again to close) |
+| **S** | Scripture passage on the story card, ending or story pages (again to close) |
+| **T** | Story pages (again for the card) |
+| **O** / Tab | Map |
+| Left / right | Previous / next story page |
 | **B** | Blank (black) screen and pause, to read from a book; **B** again to go on |
 | **N** / **P** | Next / previous story |
 | **R** | New maze |
@@ -94,7 +107,8 @@ The pictures and story text are from *Old Testament Stories* (2022) and the song
 *Children's Songbook*, both © Intellectual Reserve, Inc. Their
 [terms of use](https://www.churchofjesuschrist.org/legal/terms-of-use?lang=eng) allow personal,
 noncommercial use, so this repository does not contain them. `fetch_art.py` downloads the pictures,
-the verses of each story's scripture reference, and each song's instrumental accompaniment from its
+the story's words panel by panel, the verses of each story's scripture reference and of every reference the
+panels cite, and each song's instrumental accompaniment from its
 song page, to `art/` on your own computer (git ignores that folder). Without the pictures the activity draws simple figures instead, and without the
 music it is quiet.
 

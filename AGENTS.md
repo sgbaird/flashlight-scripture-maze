@@ -5,12 +5,15 @@ it, and children guide a scripture-story figure through the maze with a flashlig
 setup.
 
 - Python with OpenCV, NumPy, pygame and PyYAML (`requirements.txt`).
-- `activity.py` is the entry point (pygame, screens, walker, dwell buttons). `maze.py` (generation, paths, item
+- `activity.py` is the entry point (pygame, screens, walker, dwell buttons). Screens: title, story card, story
+  pages (the book's panels, with their cited verses as buttons), scripture, maze, ending, and the map that
+  reaches all of them; each screen sets its buttons with `set_buttons`. `maze.py` (generation, paths, item
   placement) and `flashlight.py` (calibration geometry, spot detection, camera thread) have no pygame, so they
   are unit-tested. `art.py` turns the downloaded pictures into cards and circular portraits; `pictures.py` draws the
   animals, goal pictures (ark, tent, city) and faint scenery with pygame shapes. `stories.py` lists
-  the stories, their picture crops and songs. `fetch_art.py` downloads the pictures, scripture passages and
-  songs' instrumental accompaniments.
+  the stories, their picture crops and songs. `fetch_art.py` downloads the pictures, the story pages (`panels` in
+  `art/<slug>/story.json`, each with the verses it cites), scripture passages and songs' instrumental
+  accompaniments.
 - Check changes with `python -m pytest tests` and `python -m py_compile *.py`. The activity needs a projector,
   camera and display, so a CI runner cannot run it; `python activity.py --mouse --window` runs without a camera.
   Say what was not run.

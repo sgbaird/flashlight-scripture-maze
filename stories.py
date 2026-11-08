@@ -23,6 +23,7 @@ Crop = Tuple[int, float, float, float]
 class Story:
     slug: str                  # Old Testament Stories chapter
     title: str                 # shown on the story card
+    short: str                 # one or two words for the map
     task: str                  # one line: what the walker does
     player_name: str
     goal_name: str
@@ -50,34 +51,36 @@ class Story:
 
 STORIES = [
     Story(
-        slug="jeremiah-the-prophet",
-        title="Jeremiah in the Dungeon",
-        task="Jeremiah was put in a muddy dungeon. Gather the ropes Ebed-melech let down "
-             "and help Jeremiah climb out.",
-        player_name="Jeremiah", goal_name="the way out",
-        ref="Jeremiah 38:6-13",
-        ending="Ebed-melech used ropes to lift Jeremiah out of the muddy dungeon. "
-               "Jeremiah kept following the Lord even when things were hard.",
-        song=("Follow the Prophet", "follow-the-prophet"),
-        cfm="Come Follow Me, October 26 - November 1: Jeremiah",
-        items=("ropes", 3, "rope"), player=(1, 0.48, 0.32, 0.25), card=4, color=(170, 110, 60),
+        slug="daniel-and-his-friends",
+        title="Daniel and His Friends",
+        short="Daniel's Friends",
+        task="Help Daniel and his friends find healthy food and water.",
+        player_name="Daniel and his friends", goal_name="the king",
+        ref="Daniel 1:8-20",
+        ending="Daniel and his friends ate healthy food. The Lord blessed them, "
+               "and they were wiser and healthier than everyone else.",
+        song=("The Word of Wisdom", "the-word-of-wisdom"),
+        cfm="Come Follow Me, November 9-15: Daniel 1-7",
+        items=("vegetables", 4, "vegetable"), player=(1, 0.5, 0.42, 0.3), card=7, color=(60, 160, 90),
     ),
     Story(
-        slug="daniel-and-the-lions-den",
-        title="Daniel and the Lions' Den",
-        task="Daniel kept praying, so he was put in the lions' den. In the morning, "
-             "help Daniel walk past the quiet lions to King Darius.",
-        player_name="Daniel", goal_name="King Darius",
-        ref="Daniel 6:10, 16-23",
-        ending="Daniel kept praying to Heavenly Father. God sent His angel, "
-               "and the lions did not hurt Daniel.",
-        song=("A Child's Prayer", "a-childs-prayer"),
+        slug="daniel-and-the-kings-dream",
+        title="Daniel and the King's Dream",
+        short="King's Dream",
+        task="King Nebuchadnezzar had a dream that no one could tell him. Daniel and his friends prayed, "
+             "and God showed Daniel the dream. Help Daniel go to the king.",
+        player_name="Daniel", goal_name="King Nebuchadnezzar",
+        ref="Daniel 2:16-19, 27-28",
+        ending="Daniel told the king his dream and what it meant. He said there is a God in heaven "
+               "who reveals secrets.",
+        song=("Search, Ponder, and Pray", "search-ponder-and-pray"),
         cfm="Come Follow Me, November 9-15: Daniel 1-7",
-        player=(1, 0.48, 0.35, 0.2), card=5, scenery="lions", color=(120, 90, 200),
+        player=(1, 0.5, 0.36, 0.24), card=7, goal=(3, 0.52, 0.3, 0.23), color=(200, 160, 70),
     ),
     Story(
         slug="shadrach-meshach-and-abed-nego",
         title="The Fiery Furnace",
+        short="Fiery Furnace",
         task="Lead Shadrach, Meshach, and Abed-nego safely out of the fiery furnace "
              "to King Nebuchadnezzar.",
         player_name="Shadrach, Meshach, and Abed-nego", goal_name="King Nebuchadnezzar",
@@ -89,20 +92,37 @@ STORIES = [
         player=(1, 0.51, 0.42, 0.29), card=5, goal=(2, 0.58, 0.56, 0.3), color=(230, 120, 40),
     ),
     Story(
-        slug="daniel-and-his-friends",
-        title="Daniel and His Friends",
-        task="Help Daniel and his friends find healthy food and water.",
-        player_name="Daniel and his friends", goal_name="the king",
-        ref="Daniel 1:8-20",
-        ending="Daniel and his friends ate healthy food. The Lord blessed them, "
-               "and they were wiser and healthier than everyone else.",
-        song=("The Word of Wisdom", "the-word-of-wisdom"),
+        slug="daniel-and-the-lions-den",
+        title="Daniel and the Lions' Den",
+        short="Lions' Den",
+        task="Daniel kept praying, so he was put in the lions' den. In the morning, "
+             "help Daniel walk past the quiet lions to King Darius.",
+        player_name="Daniel", goal_name="King Darius",
+        ref="Daniel 6:10, 16-23",
+        ending="Daniel kept praying to Heavenly Father. God sent His angel, "
+               "and the lions did not hurt Daniel.",
+        song=("A Child's Prayer", "a-childs-prayer"),
         cfm="Come Follow Me, November 9-15: Daniel 1-7",
-        items=("vegetables", 4, "vegetable"), player=(1, 0.5, 0.42, 0.3), card=7, color=(60, 160, 90),
+        player=(1, 0.48, 0.35, 0.2), card=5, scenery="lions", color=(120, 90, 200),
+    ),
+    Story(
+        slug="jeremiah-the-prophet",
+        title="Jeremiah in the Dungeon",
+        short="Jeremiah",
+        task="Jeremiah was put in a muddy dungeon. Gather the ropes Ebed-melech let down "
+             "and help Jeremiah climb out.",
+        player_name="Jeremiah", goal_name="the way out",
+        ref="Jeremiah 38:6-13",
+        ending="Ebed-melech used ropes to lift Jeremiah out of the muddy dungeon. "
+               "Jeremiah kept following the Lord even when things were hard.",
+        song=("Follow the Prophet", "follow-the-prophet"),
+        cfm="Come Follow Me, October 26 - November 1: Jeremiah",
+        items=("ropes", 3, "rope"), player=(1, 0.48, 0.32, 0.25), card=4, color=(170, 110, 60),
     ),
     Story(
         slug="david-and-goliath",
         title="David's Five Smooth Stones",
+        short="David",
         task="Help David pick five smooth stones from the brook.",
         player_name="David", goal_name="the Israelite camp",
         ref="1 Samuel 17:37-50",
@@ -113,6 +133,7 @@ STORIES = [
     Story(
         slug="noah-and-his-family",
         title="Noah's Ark",
+        short="Noah",
         task="Help Noah gather the animals and lead them into the ark.",
         player_name="Noah", goal_name="the ark",
         ref="Genesis 6:13-22; 7:1-16",
@@ -123,6 +144,7 @@ STORIES = [
     Story(
         slug="baby-moses",
         title="Baby Moses",
+        short="Baby Moses",
         task="Moses' mother hid him in a basket by the river, and his sister Miriam watched over him. "
              "Help them reach Pharaoh's daughter.",
         player_name="Moses and his mother", goal_name="Pharaoh's daughter",
@@ -135,6 +157,7 @@ STORIES = [
     Story(
         slug="the-passover",
         title="Through the Red Sea",
+        short="Red Sea",
         task="Lead the Israelites through the Red Sea on dry ground.",
         player_name="Moses", goal_name="the other side",
         ref="Exodus 14:13-22",
@@ -145,6 +168,7 @@ STORIES = [
     Story(
         slug="ruth-and-naomi",
         title="Ruth Gathers Grain",
+        short="Ruth",
         task="Help Ruth gather grain in Boaz's field for Naomi.",
         player_name="Ruth", goal_name="Naomi",
         ref="Ruth 2:2-18",
@@ -155,6 +179,7 @@ STORIES = [
     Story(
         slug="queen-esther",
         title="Queen Esther",
+        short="Esther",
         task="Help Queen Esther go to the king to save her people.",
         player_name="Esther", goal_name="the king",
         ref="Esther 4:14-16; 5:1-3",
@@ -165,6 +190,7 @@ STORIES = [
     Story(
         slug="jonah-the-prophet",
         title="Jonah Goes to Nineveh",
+        short="Jonah",
         task="Help Jonah go to Nineveh to teach the people.",
         player_name="Jonah", goal_name="Nineveh",
         ref="Jonah 3:1-10",

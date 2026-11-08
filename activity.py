@@ -5,8 +5,9 @@
     python activity.py --mouse             # no camera: the mouse is the flashlight
     python activity.py --story baby-moses  # start with one story
 
-Keys: N / P next / previous story, R new maze, M music on / off, S scripture, B blank screen, C recalibrate,
-D camera view, arrow keys move the walker, F11 fullscreen, Esc quit.
+Keys: N / P next / previous story, R new maze, M music on / off, S scripture, T story pages, O map,
+B blank screen, C recalibrate, D camera view, arrow keys move the walker (or turn the story pages),
+F11 fullscreen, Esc quit.
 """
 import argparse
 import io
@@ -141,16 +142,43 @@ def draw_icon(surface, kind, center, size, variant=0):
                                                        (x, y + s * 0.42)])
 
 
-class DwellButton:
-    """A circle pressed by holding the flashlight (or the mouse) on it."""
+def bring_to_front():
+    """Put the activity's window in front on Windows. Started from a terminal or another program, it can
+    open behind other windows; with one display mirrored to the projector, the wall then shows those."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        hwnd = pygame.display.get_wm_info().get("window")
+        user32 = ctypes.windll.user32
+        user32.keybd_event(0x12, 0, 0, 0)   # tapping Alt lets this process take the foreground
+        user32.keybd_event(0x12, 0, 2, 0)
+        user32.ShowWindow(hwnd, 9)          # SW_RESTORE
+        user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
 
-    def __init__(self, center, radius, label):
-        self.center, self.radius, self.label = center, radius, label
+
+class DwellButton:
+    """A circle pressed by holding the flashlight (or the mouse) on it. With `image`, the picture fills the
+    circle and the label goes under it; with `width`, it is a rounded bar that wide (a scripture reference)."""
+
+    def __init__(self, center, radius, label, image=None, width=None, highlight=False):
+        self.center, self.radius, self.label = (int(center[0]), int(center[1])), radius, label
+        self.image, self.width, self.highlight = image, width, highlight
         self.progress = 0.0
         self.off_for = 0.0   # so a light left where the last screen's button was does not press this one
 
+    def contains(self, light):
+        if light is None:
+            return False
+        dx, dy = light[0] - self.center[0], light[1] - self.center[1]
+        if self.width:
+            return abs(dx) <= self.width / 2 and abs(dy) <= self.radius
+        return math.hypot(dx, dy) <= self.radius
+
     def update(self, light, dt):
-        inside = light is not None and math.hypot(light[0] - self.center[0], light[1] - self.center[1]) <= self.radius
+        inside = self.contains(light)
         if self.off_for < ARM:
             self.off_for = 0.0 if inside else self.off_for + dt
             return False
@@ -163,16 +191,35 @@ class DwellButton:
 
     def draw(self, surface, font, now):
         x, y = self.center
-        r = self.radius + 4 * math.sin(now * 2.5)
+        pulse = 4 * math.sin(now * 2.5)
+        dim = (130, 112, 70)   # progress drawn dim, so it is not taken for the flashlight
+        if self.width:
+            rect = pygame.Rect(0, 0, int(self.width + 2 * pulse), 2 * self.radius)
+            rect.center = (x, y)
+            pygame.draw.rect(surface, (30, 38, 75), rect, border_radius=self.radius)
+            pygame.draw.rect(surface, GOLD, rect, 3, border_radius=self.radius)
+            if self.progress > 0:
+                pygame.draw.line(surface, dim, (rect.left + 10, rect.bottom + 8),
+                                 (rect.left + 10 + (rect.width - 20) * self.progress, rect.bottom + 8), 6)
+            img = font.render(self.label, True, TEXT)
+            surface.blit(img, img.get_rect(center=(x, y)))
+            return
+        r = self.radius + pulse
+        if self.highlight:
+            pygame.draw.circle(surface, (55, 50, 38), (x, y), int(r + 14))
         pygame.draw.circle(surface, (30, 38, 75), (x, y), int(r))
+        if self.image is not None:
+            surface.blit(self.image, self.image.get_rect(center=(x, y)))
         pygame.draw.circle(surface, GOLD, (x, y), int(r), 4)
         if self.progress > 0:
             rect = pygame.Rect(0, 0, 2 * r + 24, 2 * r + 24)
             rect.center = (x, y)
-            # dim, so the ring itself is not taken for the flashlight
-            pygame.draw.arc(surface, (130, 112, 70), rect, math.pi / 2, math.pi / 2 + 2 * math.pi * self.progress, 6)
+            pygame.draw.arc(surface, dim, rect, math.pi / 2, math.pi / 2 + 2 * math.pi * self.progress, 6)
         img = font.render(self.label, True, TEXT)
-        surface.blit(img, img.get_rect(center=(x, y)))
+        if self.image is not None:
+            surface.blit(img, img.get_rect(midtop=(x, y + self.radius + 14)))
+        else:
+            surface.blit(img, img.get_rect(center=(x, y)))
 
 
 class Recorder:
@@ -265,7 +312,12 @@ class Activity:
             self.sounds = {}
         self.fonts = {k: pygame.font.SysFont("georgia,timesnewroman,serif", v) for k, v in
                       (("huge", 84), ("big", 58), ("mid", 40), ("small", 30), ("read", 29), ("tiny", 22))}
-        self.reading, self.read_button = False, None
+        self.reading = False
+        self.pairs = []      # (button, action) on the current screen
+        self.panel = 0       # the story page shown (state "panels")
+        self.came_from = None  # the screen the map was opened from, to go back to
+        self.maze = None
+        self.maze_story = None
         self.blank = False   # B: a black screen, to stop and read from a book
         self.stars = [(random.randrange(W), random.randrange(H), random.choice((1, 1, 2))) for _ in range(140)]
         self.story_index = 0
@@ -277,8 +329,7 @@ class Activity:
         self.calibration_path = args.calibration
         self.mouse_seen = -10.0
         self.message, self.message_until = "", 0.0
-        self.state = "title"
-        self.button = DwellButton((W // 2, int(H * 0.72)), 110, "Begin")
+        self.show_title()
         self.rec = Recorder(args.record) if args.record else None
         self._start_camera()
         self.music_on, self.music_playing = not args.no_music, None
@@ -291,7 +342,9 @@ class Activity:
         display = max(0, min(display, len(sizes) - 1))
         self.display = display
         if fullscreen:
-            return pygame.display.set_mode(sizes[display], pygame.FULLSCREEN, display=display)
+            window = pygame.display.set_mode(sizes[display], pygame.FULLSCREEN, display=display)
+            bring_to_front()
+            return window
         return pygame.display.set_mode((W // 2, H // 2), pygame.RESIZABLE, display=display)
 
     def _start_camera(self):
@@ -306,7 +359,7 @@ class Activity:
         self.camera.start()
         corners = flashlight.load_calibration(self.calibration_path)
         if corners is None:
-            self.begin_calibration()
+            self.begin_calibration(wait=4.0 if not self.args.window else 0.9)
         else:
             self.camera.detector = flashlight.SpotDetector(corners, (W, H))
 
@@ -325,13 +378,22 @@ class Activity:
             info["spot"] = r(self.camera.recent_spot())
             det = self.camera.detector
             info["det"] = det.stats if det is not None else None
+            if not self.camera.is_alive() or self.camera.errors:
+                info["camera"] = {"alive": self.camera.is_alive(), "errors": self.camera.errors}
         if self.state == "maze":
             info.update(cell=list(self.cur), pos=r(self.pos), route=[list(c) for c in self.route],
                         following=round(self.following, 2), collected=self.collected,
                         items=[list(c) for c in self.items], goal=list(self.maze.goal),
                         celebrating=self.celebrate is not None)
-        elif self.state != "calibrate":
+        elif self.state != "calibrate" and self.button is not None:
             info["button"] = [self.button.label, round(self.button.progress, 2)]
+            busy = [[b.label, round(b.progress, 2)] for b, _ in self.buttons() if b.progress > 0]
+            if busy:
+                info["pressing"] = busy
+        if self.state == "panels":
+            info["panel"] = self.panel
+        if self.reading:
+            info["reading"] = self.read_title
         return info
 
     @property
@@ -371,8 +433,8 @@ class Activity:
             self.rec.event("blank", on=self.blank)
         if not self.blank:
             self.last_light = time.time()
-            if self.state in ("title", "card", "done"):
-                self.button.off_for = 0.0   # the light has to leave the button before it counts again
+            for button, _ in self.buttons():
+                button.off_for = 0.0   # the light has to leave the button before it counts again
             self.reset_detector()
 
     def toggle_music(self):
@@ -390,26 +452,40 @@ class Activity:
             self.camera.detector.reset()
 
     # --- calibration: show black, then white, and find the bright quadrilateral
-    def begin_calibration(self):
+    def begin_calibration(self, wait=0.9, tries=3):
+        """Show black, then white. `wait`: seconds before the first camera frame counts. Just after the
+        activity goes full screen the projector shows nothing for a few seconds while it switches modes."""
         self.state = "calibrate"
         self.cal_phase, self.cal_t0, self.cal_frames = "black", time.time(), {"black": [], "white": []}
+        self.cal_wait, self.cal_tries = wait, tries
 
     def update_calibration(self):
         import cv2
         import numpy as np
         import flashlight
+        if not pygame.key.get_focused():
+            # another window is in front, so the projector may be showing it: start over once we are back
+            self.cal_phase, self.cal_t0, self.cal_frames = "black", time.time(), {"black": [], "white": []}
+            self.cal_wait = max(self.cal_wait, 2.0)
+            return
         t = time.time() - self.cal_t0
-        if self.cal_phase in ("black", "white") and t > 0.9:
+        wait = self.cal_wait if self.cal_phase == "black" else 0.9
+        if self.cal_phase in ("black", "white") and t > wait:
             frame = self.camera.latest_frame()
             if frame is not None:
                 self.cal_frames[self.cal_phase].append(frame.astype(np.float32))
-            if t > 1.5:
+            if t > wait + 0.6:
                 if self.cal_phase == "black":
                     self.cal_phase, self.cal_t0 = "white", time.time()
                 else:
                     black = np.mean(self.cal_frames["black"], 0).astype(np.uint8)
                     white = np.mean(self.cal_frames["white"], 0).astype(np.uint8)
-                    corners = flashlight.find_projection(black, white)
+                    corners = flashlight.find_markers(black, white, (W, H))
+                    if corners is None and self.cal_tries > 1:  # try again, giving the projector more time
+                        if self.rec:
+                            self.rec.event("calibration_retry", tries_left=self.cal_tries - 1)
+                        self.begin_calibration(wait=2.0, tries=self.cal_tries - 1)
+                        return
                     if corners is None:
                         self.camera.detector = None
                         self.say("Calibration failed: make sure the camera sees the whole picture, then press C.", 10)
@@ -417,8 +493,7 @@ class Activity:
                         flashlight.save_calibration(self.calibration_path, corners, black.shape)
                         self.camera.detector = flashlight.SpotDetector(corners, (W, H))
                         self.say("Calibrated. Press D to see the camera view.", 5)
-                    self.state = "title"
-                    self.button = DwellButton((W // 2, int(H * 0.72)), 110, "Begin")
+                    self.show_title()
 
     # --- light source: flashlight, or the mouse when it moved recently
     def light(self):
@@ -431,19 +506,171 @@ class Activity:
             return None
         return self.camera.recent_spot()
 
-    # --- levels
+    # --- screens: each sets its buttons, (button, action) pairs
+    def set_buttons(self, pairs):
+        self.pairs = pairs
+        self.button = pairs[0][0] if pairs else None
+        self.reset_detector()
+
+    def map_button(self):
+        return (DwellButton((72, H - 66), 52, "Map"), self.open_map)
+
+    def show_title(self):
+        self.state, self.reading = "title", False
+        self.set_buttons([(DwellButton((W // 2, int(H * 0.72)), 110, "Begin"), self.advance), self.map_button()])
+
     def show_card(self):
-        self.state = "card"
-        self.button = DwellButton((int(W * 0.78), int(H * 0.8)), 105, "Start")
-        self.close_scripture()
+        self.state, self.reading = "card", False
+        pairs = [(DwellButton((int(W * 0.835), int(H * 0.8)), 105, "Start"), self.advance)]
+        if art.panels(self.story):
+            pairs.append((DwellButton((int(W * 0.585), int(H * 0.8)), 75, "Story"), lambda: self.open_panels(0)))
+        if art.scripture(self.story):
+            pairs.append((DwellButton((int(W * 0.683), int(H * 0.8)), 75, "Read"), self.open_scripture))
+        self.set_buttons(pairs + [self.map_button()])
         self.update_music()
 
-    # --- the scripture passage, opened from the story card or the ending
-    def open_scripture(self):
-        verses = art.scripture(self.story)
+    def show_done(self):
+        self.state, self.reading = "done", False
+        pairs = [(DwellButton((int(W * 0.835), int(H * 0.82)), 105, "Next"), self.advance)]
+        if art.scripture(self.story):
+            pairs.append((DwellButton((int(W * 0.683), int(H * 0.82)), 75, "Read"), self.open_scripture))
+        self.set_buttons(pairs + [self.map_button()])
+
+    # --- the story pages: the book's pictures and words, one panel at a time
+    def open_panels(self, index):
+        panels = art.panels(self.story)
+        if not panels:
+            self.say("No story pages yet: run fetch_art.py.", 5)
+            return
+        self.state, self.reading = "panels", False
+        self.panel = max(0, min(index, len(panels) - 1))
+        self.layout_panel()
+        last = self.panel == len(panels) - 1
+        pairs = [(DwellButton((int(W * 0.9), int(H * 0.87)), 85, "Maze" if last else "Next"),
+                  self.start_maze if last else lambda: self.open_panels(self.panel + 1)),
+                 (DwellButton((int(W * 0.765), int(H * 0.87)), 70, "Back"),
+                  self.show_card if self.panel == 0 else lambda: self.open_panels(self.panel - 1))]
+        for label, verses, center, width in self.panel_refs:
+            pairs.append((DwellButton(center, 34, label, width=width),
+                          lambda v=verses, t=label: self.open_scripture(v, t)))
+        self.set_buttons(pairs + [self.map_button()])
+
+    def layout_panel(self):
+        """Where the picture, the words and the reference buttons go on this page."""
+        panel = art.panels(self.story)[self.panel]
+        n = panel.get("image")
+        wide = n is not None and art.aspect(self.story, n) >= 1.9   # the book's wide strips go above the words
+        if wide:
+            self.panel_pic = art.picture(self.story, n, (W - 140, 470))
+            pic_rect = self.panel_pic.get_rect(midtop=(W // 2, 95)) if self.panel_pic else pygame.Rect(70, 95, 0, 0)
+            box = pygame.Rect(70, pic_rect.bottom + 30, W - 140, 0)
+            refs_right = int(W * 0.765) - 70 - 30
+        else:
+            self.panel_pic = art.picture(self.story, n, (int(W * 0.48), int(H * 0.74))) if n else None
+            pic_rect = self.panel_pic.get_rect(topleft=(70, 95)) if self.panel_pic else pygame.Rect(70, 95, 0, 0)
+            box = pygame.Rect(pic_rect.right + 50, 110, W - pic_rect.right - 120, 0)
+            refs_right = W - 70
+        self.panel_pic_rect = pic_rect
+        for font in (self.fonts["mid"], self.fonts["small"], self.fonts["read"]):   # the biggest words that fit
+            lines = []
+            for para in panel.get("text", []):
+                lines += wrap(font, para, box.width) + [""]
+            height = len(lines) * int(font.get_linesize() * 1.1)
+            limit = H * 0.87 - 34 - 40 if wide else H * 0.62   # wide: the references go beside Back / Next
+            if box.top + height < limit or font is self.fonts["read"]:
+                break
+        self.panel_font, self.panel_lines, self.panel_text_at = font, lines, box.topleft
+        # the references as bars, in rows under the words (left of Back/Next when the picture is wide)
+        refs, font = [], self.fonts["small"]
+        x, y = (box.left if not wide else 200), box.top + height + 30
+        if wide:
+            y = max(y, int(H * 0.87) - 34)
+        left = x
+        for ref in panel.get("refs", []):
+            if not ref.get("verses"):
+                continue
+            label = ref["label"].replace("-", "–")
+            width = font.size(label)[0] + 44
+            if x + width > refs_right and x > left:
+                x, y = left, y + 84
+            refs.append((label, ref["verses"], (x + width // 2, y + 34), width))
+            x += width + 24
+        self.panel_refs = refs
+
+    # --- the map: every story, and this story's card, pages, scripture and maze
+    def open_map(self):
+        if self.state == "map":
+            return self.close_map()
+        self.came_from = (self.state, self.panel)
+        self.state, self.reading = "map", False
+        st, d = self.story, 92
+        pairs = [(DwellButton((int(W * 0.92), int(H * 0.89)), 70, "Back"), self.close_map)]
+        tiles = [("Card", art.thumb(st, st.card, d) or art.portrait(st, "player", d), self.show_card)]
+        for i, panel in enumerate(art.panels(st)):
+            img = art.thumb(st, panel["image"], d) if panel.get("image") else None
+            tiles.append((str(i + 1), img, lambda i=i: self.open_panels(i)))
+        if art.scripture(st):
+            tiles.append(("Read", self.icon(pictures.book, d), self.read_from_map))
+        tiles.append(("Maze", self.icon(pictures.maze_icon, d), self.maze_from_map))
+        step = min(128, (W - 140) // len(tiles))
+        x0 = W // 2 - step * (len(tiles) - 1) // 2
+        here = {"card": "Card", "done": "Card", "maze": "Maze"}.get(self.came_from[0])
+        if self.came_from[0] == "panels":
+            here = str(self.came_from[1] + 1)
+        for k, (label, img, action) in enumerate(tiles):
+            pairs.append((DwellButton((x0 + k * step, 250), d // 2, label, image=img, highlight=label == here), action))
+        per_row, d = 6, 120
+        for k, other in enumerate(STORIES):
+            row, col = divmod(k, per_row)
+            count = min(per_row, len(STORIES) - row * per_row)
+            x = W // 2 + (col - (count - 1) / 2) * 250
+            y = 530 + row * 235
+            pairs.append((DwellButton((x, y), d // 2, other.short, image=art.portrait(other, "player", d),
+                                      highlight=other is st), lambda k=k: self.choose_story(k)))
+        self.set_buttons(pairs)
+
+    def icon(self, draw, d):
+        surf = pygame.Surface((d, d), pygame.SRCALPHA)
+        draw(surf, d // 2, d // 2, int(d * 0.8))
+        return surf
+
+    def close_map(self):
+        state, panel = self.came_from or ("title", 0)
+        if state == "maze" and self.maze is not None:
+            self.state, self.reading = "maze", False
+            self.set_buttons([self.maze_map_button()])
+        elif state == "panels":
+            self.open_panels(panel)
+        elif state in ("card", "done"):
+            (self.show_card if state == "card" else self.show_done)()
+        else:
+            self.show_title()
+
+    def choose_story(self, k):
+        self.story_index = k
+        self.show_card()
+
+    def read_from_map(self):
+        self.show_card()
+        self.open_scripture()
+
+    def maze_from_map(self):
+        if self.maze is not None and self.maze_story == self.story_index and self.celebrate is None:
+            self.state, self.reading = "maze", False   # go back to the maze where it was
+            self.set_buttons([self.maze_map_button()])
+        else:
+            self.start_maze()
+
+    def maze_map_button(self):
+        return (DwellButton((W - 62, 62), 44, "Map"), self.open_map)
+
+    # --- the scripture passage, opened from the story card, the ending or a story page's reference
+    def open_scripture(self, verses=None, title=None):
+        verses = verses or art.scripture(self.story)
         if not verses:
             self.say("No scripture text yet: run fetch_art.py.", 5)
             return
+        self.read_title = title or self.story.ref
         font, width = self.fonts["read"], (W - 260) // 2
         chapters = {v[0].split(":")[0] for v in verses}
         per_column = (H - 170 - 230) // font.get_linesize()
@@ -460,31 +687,28 @@ class Activity:
 
     def show_scripture_buttons(self):
         self.reading = True
-        self.back_button = DwellButton((int(W * 0.9), int(H * 0.88)), 80, "Back")
-        self.more_button = (DwellButton((int(W * 0.78), int(H * 0.88)), 80, "More")
-                            if len(self.pages) > 1 else None)
-        self.reset_detector()
+        pairs = [(DwellButton((int(W * 0.9), int(H * 0.88)), 80, "Back"), self.close_scripture)]
+        if len(self.pages) > 1:
+            pairs.append((DwellButton((int(W * 0.78), int(H * 0.88)), 80, "More"), self.more_scripture))
+        self.set_buttons(pairs)
 
     def more_scripture(self):
         self.page = (self.page + 1) % len(self.pages)
         self.show_scripture_buttons()
 
     def close_scripture(self):
+        """Back to the screen the passage was opened from."""
         self.reading = False
-        self.read_button = DwellButton((int(W * 0.6), int(H * 0.8)), 80, "Read") if art.scripture(self.story) else None
-        self.reset_detector()
+        if self.state == "panels":
+            self.open_panels(self.panel)
+        elif self.state == "done":
+            self.show_done()
+        else:
+            self.show_card()
 
     def buttons(self):
         """(button, action) pairs on this screen."""
-        if self.state in ("card", "done") and self.reading:
-            pairs = [(self.back_button, self.close_scripture)]
-            if self.more_button:
-                pairs.append((self.more_button, self.more_scripture))
-            return pairs
-        pairs = [(self.button, self.advance)]
-        if self.state in ("card", "done") and self.read_button:
-            pairs.append((self.read_button, self.open_scripture))
-        return pairs
+        return self.pairs
 
     def start_maze(self, seed=None):
         st = self.story
@@ -506,8 +730,9 @@ class Activity:
         self.maze_surface = self.render_maze()
         self.walker = art.portrait(st, "player", int(self.cell * 0.82))
         self.goal_img = art.portrait(st, "goal", int(self.cell * 0.82)) if st.goal else None
-        self.state = "maze"
-        self.reset_detector()
+        self.state, self.reading = "maze", False
+        self.maze_story = self.story_index
+        self.set_buttons([self.maze_map_button()])
 
     def next_story(self, step=1):
         self.story_index = (self.story_index + step) % len(STORIES)
@@ -564,11 +789,14 @@ class Activity:
     # --- per-frame updates
     def update_maze(self, dt, now):
         light = self.light()
+        for button, action in self.buttons():   # the map button in the corner
+            if button.update(light, dt):
+                self.play("press")
+                action()
+                return
         if self.celebrate is not None:
             if now - self.celebrate > 2.5:
-                self.state = "done"
-                self.button = DwellButton((int(W * 0.78), int(H * 0.82)), 105, "Next")
-                self.close_scripture()
+                self.show_done()
             return
         if light is not None:
             self.last_light = now
@@ -640,12 +868,12 @@ class Activity:
             draw_text(s, self.fonts["small"], cfm, (W // 2, 480), GOLD, anchor="midtop")
         draw_text(s, self.fonts["small"], "Shine your flashlight on the circle and hold it there.",
                   (W // 2, int(H * 0.88)), SOFT, anchor="midtop")
-        self.button.draw(s, self.fonts["mid"], now)
+        self.draw_buttons(s, now)
 
     def draw_scripture(self, s, now):
         self.draw_sky(s)
-        st, font = self.story, self.fonts["read"]
-        title = st.ref + ("   (%d / %d)" % (self.page + 1, len(self.pages)) if len(self.pages) > 1 else "")
+        font = self.fonts["read"]
+        title = self.read_title + ("   (%d / %d)" % (self.page + 1, len(self.pages)) if len(self.pages) > 1 else "")
         draw_text(s, self.fonts["mid"], title, (100, 70), GOLD)
         step = font.get_linesize()
         for col, lines in enumerate(self.pages[self.page]):
@@ -654,13 +882,33 @@ class Activity:
                 if num:
                     draw_text(s, self.fonts["tiny"], num, (x, y + 4), GOLD)
                 draw_text(s, font, line, (x + 70, y), TEXT)
-        self.back_button.draw(s, self.fonts["small"], now)
-        if self.more_button:
-            self.more_button.draw(s, self.fonts["small"], now)
+        self.draw_buttons(s, now)
+
+    def draw_buttons(self, s, now):
+        for button, _ in self.buttons():
+            button.draw(s, self.fonts["mid" if button.radius >= 100 else "small"], now)
+
+    def draw_panel(self, s, now):
+        self.draw_sky(s)
+        st, panels = self.story, art.panels(self.story)
+        draw_text(s, self.fonts["small"], "%s   %d / %d" % (st.title, self.panel + 1, len(panels)), (70, 30), SOFT)
+        if self.panel_pic is not None:
+            s.blit(self.panel_pic, self.panel_pic_rect)
+            pygame.draw.rect(s, GOLD, self.panel_pic_rect.inflate(10, 10), 4)
+        font, (x, y) = self.panel_font, self.panel_text_at
+        for line in self.panel_lines:
+            if line:
+                draw_text(s, font, line, (x, y), TEXT)
+            y += int(font.get_linesize() * 1.1)
+        self.draw_buttons(s, now)
+
+    def draw_map(self, s, now):
+        self.draw_sky(s)
+        draw_text(s, self.fonts["mid"], self.story.title, (70, 70), GOLD)
+        draw_text(s, self.fonts["small"], "Stories", (70, 385), GOLD)
+        self.draw_buttons(s, now)
 
     def draw_card(self, s, now, ending=False):
-        if self.reading:
-            return self.draw_scripture(s, now)
         self.draw_sky(s)
         st = self.story
         pic = art.card(st, (int(W * 0.5), int(H * 0.72)))
@@ -682,9 +930,7 @@ class Activity:
                           (x0, y + 15), SOFT, width)
         draw_text(s, self.fonts["small"], "♪ %s  (M: music on / off)" % st.song[0],
                   (x0, y + 30), SOFT, width)
-        self.button.draw(s, self.fonts["mid"], now)
-        if self.read_button:
-            self.read_button.draw(s, self.fonts["small"], now)
+        self.draw_buttons(s, now)
 
     def draw_maze(self, s, now):
         s.blit(self.maze_surface, (0, 0))
@@ -725,6 +971,7 @@ class Activity:
                 r0, r1 = k * 0.6, k * (0.8 + t * 1.2)
                 pygame.draw.line(s, (200, 180, 110), (gx + math.cos(a) * r0, gy + math.sin(a) * r0),
                                  (gx + math.cos(a) * r1, gy + math.sin(a) * r1), 4)
+        self.draw_buttons(s, now)
 
     @staticmethod
     def draw_star(s, c, r, color):
@@ -736,7 +983,12 @@ class Activity:
         pygame.draw.polygon(s, color, pts)
 
     def draw_calibration(self, s):
-        s.fill((0, 0, 0) if self.cal_phase == "black" else (255, 255, 255))
+        s.fill((0, 0, 0))
+        if self.cal_phase == "white":  # four white squares (flashlight.find_markers), not a whole white screen
+            import flashlight
+            side = int(H * flashlight.MARKER_SIZE)
+            for x, y in flashlight.marker_centres((W, H)):
+                s.fill((255, 255, 255), pygame.Rect(int(x) - side // 2, int(y) - side // 2, side, side))
 
     # --- main loop
     def handle_event(self, e):
@@ -768,15 +1020,25 @@ class Activity:
                 self.start_maze()
             elif k in (pygame.K_SPACE, pygame.K_RETURN):
                 self.play("press")
-                if self.reading and self.state in ("card", "done"):
+                if self.reading:
                     self.close_scripture()
+                elif self.state in ("panels", "map"):
+                    self.button_action(0)
                 else:
                     self.advance()
-            elif k == pygame.K_s and self.state in ("card", "done"):
+            elif k == pygame.K_s and self.state in ("card", "done", "panels"):
                 if self.reading:
                     self.close_scripture()
                 else:
                     self.open_scripture()
+            elif k == pygame.K_t and self.state in ("card", "done", "panels", "maze") and not self.reading:
+                self.open_panels(0) if self.state != "panels" else self.show_card()
+            elif k in (pygame.K_o, pygame.K_TAB) and self.state not in ("calibrate",) and not self.reading:
+                self.open_map()
+            elif k == pygame.K_LEFT and self.state == "panels" and not self.reading:
+                self.button_action(1)
+            elif k == pygame.K_RIGHT and self.state == "panels" and not self.reading:
+                self.button_action(0)
             elif k == pygame.K_LEFT:
                 self.move_key(-1, 0)
             elif k == pygame.K_RIGHT:
@@ -787,9 +1049,12 @@ class Activity:
                 self.move_key(0, 1)
         return True
 
+    def button_action(self, i):
+        pairs = self.buttons()
+        if i < len(pairs):
+            pairs[i][1]()
+
     def advance(self):
-        if self.rec:
-            self.rec.event("press", state=self.state, story=self.story.slug)
         if self.state == "title":
             self.show_card()
         elif self.state == "card":
@@ -816,6 +1081,8 @@ class Activity:
                 for button, action in self.buttons():
                     if button.update(light, dt):
                         self.play("press")
+                        if self.rec:
+                            self.rec.event("press", label=button.label, state=self.state, story=self.story.slug)
                         action()
                         break
             s = self.canvas
@@ -823,8 +1090,14 @@ class Activity:
                 s.fill((0, 0, 0))
             elif self.state == "calibrate":
                 self.draw_calibration(s)
+            elif self.reading:
+                self.draw_scripture(s, now)
             elif self.state == "title":
                 self.draw_title(s, now)
+            elif self.state == "panels":
+                self.draw_panel(s, now)
+            elif self.state == "map":
+                self.draw_map(s, now)
             elif self.state == "card":
                 self.draw_card(s, now)
             elif self.state == "done":

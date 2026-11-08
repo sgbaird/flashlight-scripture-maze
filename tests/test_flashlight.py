@@ -41,6 +41,40 @@ def test_find_projection():
     assert np.abs(found - CORNERS).max() < 6
 
 
+def test_find_markers_ignores_light_spilled_on_the_ceiling():
+    # as on 2026-11-08: the projector's black is grey, and lighting the screen brightens the ceiling
+    black = camera_view(np.full((1080, 1920), 90, np.uint8))
+    squares = np.full((1080, 1920), 90, np.uint8)
+    side = int(1080 * flashlight.MARKER_SIZE)
+    for x, y in flashlight.marker_centres((1920, 1080)):
+        cv2.rectangle(squares, (int(x) - side // 2, int(y) - side // 2), (int(x) + side // 2, int(y) + side // 2), 255, -1)
+    white = camera_view(squares)
+    white[:90] = cv2.add(white[:90], 12)                       # a little spill on the ceiling
+    found = flashlight.find_markers(black, white, (1920, 1080))
+    assert found is not None
+    assert np.abs(found - CORNERS).max() < 6
+
+
+def test_find_markers_ignores_reflections_of_the_squares():
+    # as on 2026-11-08: a glossy ceiling and floor reflect each square as a bigger, taller smear
+    black = camera_view(np.full((1080, 1920), 90, np.uint8))
+    squares = np.full((1080, 1920), 90, np.uint8)
+    side = int(1080 * flashlight.MARKER_SIZE)
+    for x, y in flashlight.marker_centres((1920, 1080)):
+        cv2.rectangle(squares, (int(x) - side // 2, int(y) - side // 2), (int(x) + side // 2, int(y) + side // 2), 255, -1)
+    white = camera_view(squares)
+    for x in (160, 470):                                        # smears above the picture, taller than the squares
+        cv2.ellipse(white, (x, 60), (11, 24), 0, 0, 360, 230, -1)
+    found = flashlight.find_markers(black, white, (1920, 1080))
+    assert found is not None
+    assert np.abs(found - CORNERS).max() < 6
+
+
+def test_find_markers_fails_when_the_projector_shows_nothing():
+    black = np.full((480, 640), 75, np.uint8)
+    assert flashlight.find_markers(black, black.copy(), (1920, 1080)) is None
+
+
 def test_spot_found_in_screen_coordinates():
     det = SpotDetector(CORNERS, (1920, 1080))
     t = 100.0
@@ -85,3 +119,40 @@ def test_still_bright_patch_fades_into_background():
         t += 0.1
     seen = [det.process(scene(spot=(1300, 400)), t + 0.033 * i) for i in range(1500)]
     assert seen[0] is not None and seen[-1] is None
+
+
+def test_reset_from_another_thread_is_done_at_the_next_frame():
+    # resetting cleared the background while the camera thread was mid-frame and crashed it (2026-11-08)
+    det = SpotDetector(CORNERS, (1920, 1080))
+    det.process(scene(), now=0.0)
+    det.reset()
+    assert det.bg is not None                      # nothing cleared under the camera thread's feet
+    assert det.process(scene(spot=(900, 500)), now=5.0) is None   # starts over: settles again
+    assert det.process(scene(spot=(900, 500)), now=5.1) is None
+
+
+def test_camera_thread_survives_a_failing_detector():
+    import time as _time
+
+    class Cap:
+        def read(self):
+            _time.sleep(0.01)
+            return True, np.zeros((480, 640, 3), np.uint8)
+
+        def release(self):
+            pass
+
+    class Broken:
+        def process(self, frame, now):
+            raise TypeError("boom")
+
+        def reset(self):
+            pass
+
+    cam = flashlight.Camera(Cap())
+    cam.detector = Broken()
+    cam.start()
+    _time.sleep(0.2)
+    assert cam.is_alive() and cam.errors > 1
+    cam.running = False
+    cam.join(timeout=1)
