@@ -2,9 +2,9 @@
 
 The camera sees the projection. Four calibration points (the projection's corners in the
 camera image, top-left, top-right, bottom-right, bottom-left) map each camera frame onto the
-game's own coordinates. A slowly updated background of the warped frames holds whatever the
+screen's own coordinates. A slowly updated background of the warped frames holds whatever the
 projector shows; the flashlight spot is a patch much brighter than that background and bright
-in absolute terms. The game keeps its picture dim (dark sky, muted walls, dimmed portraits) so
+in absolute terms. The activity keeps its picture dim (dark sky, muted walls, dimmed portraits) so
 that only the flashlight is that bright.
 """
 import os
@@ -15,13 +15,16 @@ import cv2
 import numpy as np
 import yaml
 
-WORK = (480, 270)          # detection resolution (game is 1920 x 1080)
+WORK = (480, 270)          # detection resolution (the screen is 1920 x 1080)
 DIFF = 45                  # brighter than the background by at least this much (0-255)
 MIN_LEVEL = 170            # and at least this bright in absolute terms
-MIN_AREA = 12              # spot area in WORK pixels (about 4 x 3)
+MIN_AREA = 150             # spot area in WORK pixels (about 14 across); a flashlight a few metres from the
+                           # wall made 1200-5000 here, stray reflections and flicker mostly under 300
 MAX_AREA = 9000            # a whole-screen change is not a spot (e.g. lights turned on)
 BG_RATE = 0.06             # background learning rate away from the spot
-SETTLE = 0.6               # seconds after a reset before spots are reported
+SPOT_RATE = 0.004          # ...and at the spot, so a still bright patch fades into the background (about 15 s)
+SETTLE = 0.8               # seconds after a reset before spots are reported; until then the background is
+                           # replaced by each frame, since the camera sees the new picture a little late
 SMOOTH = 0.5               # spot position smoothing (0 = none)
 
 
@@ -74,8 +77,8 @@ def find_projection(black, white, min_fraction=0.03):
 
 
 class SpotDetector:
-    def __init__(self, corners, game_size=(1920, 1080), work=WORK):
-        self.game_size, self.work = game_size, work
+    def __init__(self, corners, screen_size=(1920, 1080), work=WORK):
+        self.screen_size, self.work = screen_size, work
         dst = np.array([[0, 0], [work[0], 0], [work[0], work[1]], [0, work[1]]], np.float32)
         self.H = cv2.getPerspectiveTransform(order_corners(corners), dst)
         self.reset()
@@ -85,9 +88,10 @@ class SpotDetector:
         self.bg = None
         self.since = None   # time of the first frame after a reset
         self.pos = None
+        self.stats = {}     # last frame's numbers, for tuning DIFF and MIN_LEVEL (activity.py --record logs them)
 
     def process(self, frame, now=None):
-        """Spot centre in game coordinates for one camera frame, or None."""
+        """Spot centre in screen coordinates for one camera frame, or None."""
         now = time.time() if now is None else now
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
         warped = cv2.warpPerspective(gray, self.H, self.work)
@@ -95,6 +99,10 @@ class SpotDetector:
         if self.bg is None:
             self.bg = warped.copy()
             self.since = now
+            return None
+        if now - self.since < SETTLE:
+            self.bg = warped.copy()
+            self.pos = None
             return None
         diff = warped - self.bg
         mask = ((diff > DIFF) & (warped > MIN_LEVEL)).astype(np.uint8) * 255
@@ -107,17 +115,22 @@ class SpotDetector:
                 score = float(diff[labels == i].sum())
                 if score > best_score:
                     best, best_score = i, score
-        # learn the background everywhere except around the spot
+        # learn the background everywhere, slowly around the spot
         learn = np.ones(self.work[::-1], np.uint8)
         if best is not None:
             spot = (labels == best).astype(np.uint8)
             learn[cv2.dilate(spot, np.ones((15, 15), np.uint8)) > 0] = 0
         cv2.accumulateWeighted(warped, self.bg, BG_RATE, mask=learn)
-        if best is None or now - self.since < SETTLE:
+        cv2.accumulateWeighted(warped, self.bg, SPOT_RATE, mask=1 - learn)
+        iy, ix = np.unravel_index(int(np.argmax(diff)), diff.shape)
+        self.stats = {"max_diff": round(float(diff[iy, ix]), 1), "level_there": round(float(warped[iy, ix]), 1),
+                      "max_level": round(float(warped.max()), 1), "blobs": n - 1,
+                      "area": int(stats[best, cv2.CC_STAT_AREA]) if best is not None else 0}
+        if best is None:
             self.pos = None
             return None
-        sx = self.game_size[0] / self.work[0]
-        sy = self.game_size[1] / self.work[1]
+        sx = self.screen_size[0] / self.work[0]
+        sy = self.screen_size[1] / self.work[1]
         x, y = cents[best][0] * sx, cents[best][1] * sy
         if self.pos is not None:
             x = SMOOTH * self.pos[0] + (1 - SMOOTH) * x
@@ -150,7 +163,7 @@ class Camera(threading.Thread):
         self.cap = cap
         self.detector = None
         self.frame = None
-        self.spot = None          # (x, y, time) in game coordinates
+        self.spot = None          # (x, y, time) in screen coordinates
         self.show_debug = False
         self.lock = threading.Lock()
         self.running = True
@@ -178,8 +191,8 @@ class Camera(threading.Thread):
                                  np.float32), pts)
                     cv2.polylines(view, [corners.astype(np.int32)], True, (0, 200, 255), 2)
                     if self.spot and now - self.spot[2] < 0.3:
-                        p = cv2.perspectiveTransform(np.array([[[self.spot[0] * det.work[0] / det.game_size[0],
-                                                                  self.spot[1] * det.work[1] / det.game_size[1]]]],
+                        p = cv2.perspectiveTransform(np.array([[[self.spot[0] * det.work[0] / det.screen_size[0],
+                                                                  self.spot[1] * det.work[1] / det.screen_size[1]]]],
                                                               np.float32), pts)[0][0]
                         cv2.circle(view, (int(p[0]), int(p[1])), 14, (0, 255, 0), 2)
                 cv2.imshow("camera (D to hide)", view)

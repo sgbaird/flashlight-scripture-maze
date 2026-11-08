@@ -7,13 +7,13 @@ from flashlight import SpotDetector, find_projection, order_corners
 CORNERS = np.array([[100, 120], [540, 110], [560, 400], [90, 380]], np.float32)  # camera pixels
 
 
-def camera_view(game_img):
-    """What the camera would see of a 1920x1080 game picture projected into CORNERS."""
+def camera_view(screen_img):
+    """What the camera would see of a 1920x1080 picture projected into CORNERS."""
     src = np.array([[0, 0], [1920, 0], [1920, 1080], [0, 1080]], np.float32)
     M = cv2.getPerspectiveTransform(src, CORNERS)
     frame = np.full((480, 640), 15, np.uint8)
-    warped = cv2.warpPerspective(game_img, M, (640, 480))
-    mask = cv2.warpPerspective(np.ones_like(game_img), M, (640, 480)) > 0
+    warped = cv2.warpPerspective(screen_img, M, (640, 480))
+    mask = cv2.warpPerspective(np.ones_like(screen_img), M, (640, 480)) > 0
     frame[mask] = warped[mask]
     return frame
 
@@ -41,7 +41,7 @@ def test_find_projection():
     assert np.abs(found - CORNERS).max() < 6
 
 
-def test_spot_found_in_game_coordinates():
+def test_spot_found_in_screen_coordinates():
     det = SpotDetector(CORNERS, (1920, 1080))
     t = 100.0
     for _ in range(10):
@@ -64,3 +64,24 @@ def test_settle_after_reset():
     det = SpotDetector(CORNERS, (1920, 1080))
     det.process(scene(), 0.0)
     assert det.process(scene(spot=(900, 500)), flashlight.SETTLE / 2) is None
+
+
+def test_picture_seen_late_after_reset_is_not_a_spot():
+    """The camera shows the old picture for a moment after the screen changes; the new one is background."""
+    det = SpotDetector(CORNERS, (1920, 1080))
+    det.process(scene(), 0.0)                       # first frame after reset: still the old picture
+    bright = scene(spot=(600, 400))                 # the new picture has a bright patch (e.g. a sunbeam)
+    t = 0.2
+    while t < 3.0:
+        assert det.process(bright, t) is None
+        t += 0.1
+
+
+def test_still_bright_patch_fades_into_background():
+    det = SpotDetector(CORNERS, (1920, 1080))
+    t = 0.0
+    for _ in range(12):
+        det.process(scene(), t)
+        t += 0.1
+    seen = [det.process(scene(spot=(1300, 400)), t + 0.033 * i) for i in range(1500)]
+    assert seen[0] is not None and seen[-1] is None

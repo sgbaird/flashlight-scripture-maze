@@ -33,6 +33,15 @@ def story_text(story):
         return []
 
 
+def scripture(story):
+    """[(label, text), ...] for the story's scripture reference (art/<slug>/scripture.json), or []."""
+    try:
+        with open(os.path.join(ART, story.slug, "scripture.json"), encoding="utf-8") as f:
+            return [tuple(v) for v in json.load(f).get("verses", [])]
+    except (OSError, ValueError):
+        return []
+
+
 def dimmed(surface, factor):
     """A copy of surface with its colours scaled by factor (keeps the flashlight the brightest thing)."""
     out = surface.copy()
