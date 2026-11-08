@@ -44,34 +44,112 @@ def _get(url, timeout=30, headers=UA, tries=4):
             time.sleep(2 * (attempt + 1))
 
 
-def story_page(slug):
-    """(paragraphs, image ids in page order) for an Old Testament Stories chapter."""
-    data = json.loads(_get(API.format(uri=urllib.parse.quote(MANUAL + slug))))
-    body = data["content"]["body"]
+def _text(fragment):
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", fragment))).strip()
+
+
+def image_ids(body):
+    """Picture ids in page order (the order of art/<slug>/01.jpg, 02.jpg, ...)."""
     ids = []
     for m in re.finditer(r"/imgs/([0-9a-f]{40})/", body):
         if m.group(1) not in ids:
             ids.append(m.group(1))
-    paras = []
-    for p in re.findall(r"<p[^>]*>(.*?)</p>", body, re.S):
-        text = html.unescape(re.sub(r"<[^>]+>", "", p)).strip()
-        if text:
-            paras.append(re.sub(r"\s+", " ", text))
-    return paras, ids
+    return ids
+
+
+def parse_ref_link(href, label):
+    """A scripture link in the stories ('/study/scriptures/ot/jer/36?lang=eng&id=p1-p2,27-p32#p1') ->
+    {'label', 'path': '/scriptures/ot/jer/36', 'chapter': 36, 'ranges': [[1, 2], [27, 32]]} (no ranges:
+    the whole chapter)."""
+    href = html.unescape(href)
+    path = urllib.parse.urlparse(href).path.replace("/study", "", 1)
+    ids = urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("id", [""])[0]
+    ranges = [[int(a), int(b or a)] for a, b in re.findall(r"p?(\d+)(?:-p?(\d+))?", ids)]
+    return {"label": label, "path": path, "chapter": int(path.rstrip("/").rsplit("/", 1)[-1]), "ranges": ranges}
+
+
+def parse_panels(body):
+    """The chapter as panels, the way the book shows it: each picture with the paragraphs after it and
+    the scripture references they cite. [{'image': n or None, 'text': [...], 'refs': [...]}]."""
+    ids = image_ids(body)
+    panels = []
+    for m in re.finditer(r'<img\b[^>]*?data-img-id="([0-9a-f]{40})"[^>]*>|<p\b([^>]*)>(.*?)</p>', body, re.S):
+        if m.group(1):
+            panels.append({"image": ids.index(m.group(1)) + 1, "text": [], "refs": []})
+            continue
+        attrs, inner = m.group(2), m.group(3)
+        if re.search(r'class="(reference|short-reference|title-number|intro)"', attrs) or not panels:
+            continue   # the chapter heading, before the first picture
+        links = re.findall(r'<a[^>]*class="scripture-ref"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', inner, re.S)
+        rest = _text(re.sub(r'<a[^>]*class="scripture-ref".*?</a>', "", inner, flags=re.S))
+        if links and not re.sub(r"[;,.\s]", "", rest):   # a paragraph of references only
+            book = ""
+            for h, t in links:
+                label = _text(t)
+                named = re.match(r"((?:[1-4] )?[^\d\s][^\d]*?)\s+\d", label)   # "Jeremiah 6", "1 Samuel 17"
+                if named:
+                    book = named.group(1)
+                elif book:   # "Jeremiah 6:1-19; 8-9; 17:21-27": the later ones leave out the book
+                    label = book + " " + label
+                panels[-1]["refs"].append(parse_ref_link(h, label))
+        elif _text(inner):
+            panels[-1]["text"].append(_text(inner))
+    return [p for p in panels if p["text"] or p["refs"]]
+
+
+def story_page(slug):
+    """(paragraphs, image ids in page order, panels) for an Old Testament Stories chapter."""
+    data = json.loads(_get(API.format(uri=urllib.parse.quote(MANUAL + slug))))
+    body = data["content"]["body"]
+    paras = [t for t in (_text(p) for p in re.findall(r"<p[^>]*>(.*?)</p>", body, re.S)) if t]
+    return paras, image_ids(body), parse_panels(body)
+
+
+_chapters = {}
+
+
+def chapter_verses(path):
+    """{verse number: text} for a scripture chapter ('/scriptures/ot/jer/38')."""
+    if path not in _chapters:
+        body = json.loads(_get(API.format(uri=urllib.parse.quote(path))))["content"]["body"]
+        verses = {}
+        for m in re.finditer(r'<p([^>]*class="verse"[^>]*)>(.*?)</p>', body, re.S):
+            # the Bible pages have data-eng-ref="38:6"; the Pearl of Great Price pages only id="p6"
+            num = re.search(r'data-eng-ref="\d+:(\d+)"', m.group(1)) or re.search(r'id="p(\d+)"', m.group(1))
+            if not num:
+                continue
+            text = re.sub(r'<span class="(verse-number|para-mark)">.*?</span>', "", m.group(2))
+            text = re.sub(r"<sup[^>]*>.*?</sup>", "", text)
+            verses[int(num.group(1))] = _text(text)
+        _chapters[path] = verses
+        time.sleep(0.3)
+    return _chapters[path]
 
 
 def fetch(slug, width=1280):
     out = os.path.join(ART, slug)
     os.makedirs(out, exist_ok=True)
-    paras, ids = story_page(slug)
+    paras, ids, panels = story_page(slug)
     for i, img_id in enumerate(ids, 1):
         path = os.path.join(out, "%02d.jpg" % i)
         if not os.path.exists(path):
             with open(path, "wb") as f:
                 f.write(_get(IMG.format(id=img_id, w=width)))
             time.sleep(0.3)
+    for panel in panels:   # the verses each panel cites, so they can be opened from the panel
+        for ref in panel["refs"]:
+            ref["verses"] = []
+            whole = re.search(r"\s(\d+)[–-](\d+)$", ref["label"])   # "Jeremiah 8-9": two whole chapters
+            chapters = range(int(whole.group(1)), int(whole.group(2)) + 1) if whole and not ref["ranges"] else [ref["chapter"]]
+            for chapter in chapters:
+                try:
+                    verses = chapter_verses(ref["path"].rsplit("/", 1)[0] + "/%d" % chapter)
+                except Exception:   # keep the panel; this reference just has no verses to open
+                    verses = {}
+                pick = [v for v in sorted(verses) if not ref["ranges"] or any(a <= v <= b for a, b in ref["ranges"])]
+                ref["verses"] += [["%d:%d" % (chapter, v), verses[v]] for v in pick]
     with open(os.path.join(out, "story.json"), "w", encoding="utf-8") as f:
-        json.dump({"slug": slug, "paragraphs": paras, "images": len(ids),
+        json.dump({"slug": slug, "paragraphs": paras, "images": len(ids), "panels": panels,
                    "source": "https://www.churchofjesuschrist.org/study" + MANUAL + slug}, f, indent=1)
     return len(ids)
 
@@ -102,15 +180,8 @@ def fetch_scripture(story):
     """The verses of the story's reference (scripture text) as art/<slug>/scripture.json."""
     verses = []
     for book, chapter, ranges in parse_ref(story.ref):
-        uri = SCRIPTURE.format(book=book, chapter=chapter)
-        body = json.loads(_get(API.format(uri=urllib.parse.quote(uri))))["content"]["body"]
-        for m in re.finditer(r'<p[^>]*class="verse"[^>]*data-eng-ref="(\d+):(\d+)"[^>]*>(.*?)</p>', body, re.S):
-            v = int(m.group(2))
-            if any(a <= v <= b for a, b in ranges):
-                text = re.sub(r'<span class="(verse-number|para-mark)">.*?</span>', "", m.group(3))
-                text = re.sub(r"<sup[^>]*>.*?</sup>", "", text)
-                text = html.unescape(re.sub(r"<[^>]+>", "", text))
-                verses.append(["%d:%d" % (chapter, v), re.sub(r"\s+", " ", text).strip()])
+        found = chapter_verses(SCRIPTURE.format(book=book, chapter=chapter))
+        verses += [["%d:%d" % (chapter, v), found[v]] for v in sorted(found) if any(a <= v <= b for a, b in ranges)]
     if not verses:
         raise ValueError("no verses found for %s" % story.ref)
     os.makedirs(os.path.join(ART, story.slug), exist_ok=True)

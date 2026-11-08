@@ -16,6 +16,7 @@ def test_stories_are_complete():
         assert re.fullmatch(r"[a-z0-9-]+", s.song[1])
         assert s.size in SIZES
         assert s.title and s.task and s.ending and s.ref
+        assert s.short and len(s.short.split()) <= 2   # the map shows one or two words
         if s.items:
             name, count, icon = s.items
             assert icon in ICONS and 1 <= count <= 6

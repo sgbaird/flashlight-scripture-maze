@@ -76,6 +76,52 @@ def find_projection(black, white, min_fraction=0.03):
     return order_corners(cv2.boxPoints(cv2.minAreaRect(hull)))
 
 
+MARKER_INSET = 0.15        # calibration squares: centres this far in from each edge (fraction of the screen)
+MARKER_SIZE = 0.12         # ...and this big (fraction of the screen height)
+
+
+def marker_centres(screen_size):
+    """Screen positions of the four calibration squares, top-left, top-right, bottom-right, bottom-left."""
+    w, h = screen_size
+    a, b = MARKER_INSET, 1 - MARKER_INSET
+    return np.array([[a * w, a * h], [b * w, a * h], [b * w, b * h], [a * w, b * h]], np.float32)
+
+
+def find_markers(black, white, screen_size, min_area=6):
+    """Projection corners in the camera image from frames of an all-black screen and of the four
+    calibration squares (`marker_centres`) on black, or None.
+
+    Better than a whole white screen: a white screen lights the room, and the ceiling and walls
+    around the picture brighten as much as the picture itself (seen on 2026-11-08), so the bright
+    area is not the picture. Four squares light the room very little."""
+    to_gray = lambda im: cv2.cvtColor(im, cv2.COLOR_BGR2GRAY) if im.ndim == 3 else im
+    diff = cv2.GaussianBlur(cv2.subtract(to_gray(white), to_gray(black)), (5, 5), 0)
+    if diff.max() < 30:
+        return None
+    _, mask = cv2.threshold(diff, max(15, int(diff.max()) // 2), 255, cv2.THRESH_BINARY)
+    n, _, stats, centroids = cv2.connectedComponentsWithStats(mask)
+
+    def squareness(i):
+        # a glossy ceiling or floor reflects each square as a taller smear (seen on 2026-11-08: 22 x 40 and
+        # 71-81 % filled, against 23 x 23 and 96 % for the squares), so prefer solid square blobs
+        _, _, w, h, area = stats[i]
+        return area / (w * h) * min(w, h) / max(w, h)
+
+    blobs = sorted(range(1, n), key=lambda i: -stats[i, cv2.CC_STAT_AREA] * squareness(i))[:4]
+    if len(blobs) < 4:
+        return None
+    areas = [stats[i, cv2.CC_STAT_AREA] for i in blobs]
+    if areas[3] < min_area or areas[3] < 0.25 * areas[0]:   # four squares look about the same size
+        return None
+    seen = order_corners(centroids[blobs])
+    if not cv2.isContourConvex(seen) or cv2.contourArea(seen) < 0.01 * diff.size:
+        return None   # not four squares at the corners of a picture (something else changed)
+    M = cv2.getPerspectiveTransform(marker_centres(screen_size), seen)
+    w, h = screen_size
+    corners = np.array([[[0, 0], [w, 0], [w, h], [0, h]]], np.float32)
+    return order_corners(cv2.perspectiveTransform(corners, M)[0])
+
+
 class SpotDetector:
     def __init__(self, corners, screen_size=(1920, 1080), work=WORK):
         self.screen_size, self.work = screen_size, work

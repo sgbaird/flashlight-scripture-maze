@@ -42,6 +42,16 @@ def scripture(story):
         return []
 
 
+def panels(story):
+    """The chapter's panels as the book shows them: [{'image': n, 'text': [...], 'refs': [{'label',
+    'verses': [[label, text], ...]}, ...]}, ...] from art/<slug>/story.json, or [] (run fetch_art.py)."""
+    try:
+        with open(os.path.join(ART, story.slug, "story.json"), encoding="utf-8") as f:
+            return json.load(f).get("panels", [])
+    except (OSError, ValueError):
+        return []
+
+
 def dimmed(surface, factor):
     """A copy of surface with its colours scaled by factor (keeps the flashlight the brightest thing)."""
     out = surface.copy()
@@ -50,14 +60,50 @@ def dimmed(surface, factor):
     return out
 
 
+def picture(story, n, box, factor=0.85):
+    """Picture n of the story scaled to fit box (w, h), dimmed, or None."""
+    key = ("picture", story.slug, n, box, factor)
+    if key not in _cache:
+        img = _image(story.slug, n)
+        if img is None:
+            return None
+        w, h = img.get_size()
+        k = min(box[0] / w, box[1] / h)
+        _cache[key] = dimmed(pygame.transform.smoothscale(img, (int(w * k), int(h * k))), factor)
+    return _cache[key]
+
+
+def aspect(story, n):
+    img = _image(story.slug, n)
+    return img.get_width() / img.get_height() if img is not None else 1.5
+
+
 def card(story, box, factor=0.85):
     """The story picture scaled to fit box (w, h), or None."""
-    img = _image(story.slug, story.card) or _image(story.slug, 1)
-    if img is None:
-        return None
-    w, h = img.get_size()
-    k = min(box[0] / w, box[1] / h)
-    return dimmed(pygame.transform.smoothscale(img, (int(w * k), int(h * k))), factor)
+    return picture(story, story.card, box, factor) or picture(story, 1, box, factor)
+
+
+def thumb(story, n, diameter, factor=0.75):
+    """A round thumbnail of the middle of picture n, or None."""
+    key = ("thumb", story.slug, n, diameter, factor)
+    if key not in _cache:
+        img = _image(story.slug, n)
+        if img is None:
+            return None
+        w, h = img.get_size()
+        side = min(w, h)
+        _cache[key] = _round(img.subsurface(pygame.Rect((w - side) // 2, (h - side) // 2, side, side)), diameter, factor)
+    return _cache[key]
+
+
+def _round(square, diameter, factor):
+    sq = pygame.transform.smoothscale(square, (diameter, diameter))
+    mask = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+    pygame.draw.circle(mask, (255, 255, 255, 255), (diameter // 2, diameter // 2), diameter // 2)
+    surf = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+    surf.blit(sq, (0, 0))
+    surf.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+    return dimmed(surf, factor)
 
 
 def figure(color, diameter, label=""):
@@ -90,13 +136,7 @@ def portrait(story, which, diameter, factor=0.7):
         w, h = img.get_size()
         rad = r * h
         src = pygame.Rect(int(cx * w - rad), int(cy * h - rad), int(2 * rad), int(2 * rad)).clip(img.get_rect())
-        sq = pygame.transform.smoothscale(img.subsurface(src), (diameter, diameter))
-        mask = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
-        pygame.draw.circle(mask, (255, 255, 255, 255), (diameter // 2, diameter // 2), diameter // 2)
-        surf = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
-        surf.blit(sq, (0, 0))
-        surf.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
-        surf = dimmed(surf, factor)
+        surf = _round(img.subsurface(src), diameter, factor)
         pygame.draw.circle(surf, GOLD, (diameter // 2, diameter // 2), diameter // 2, max(2, diameter // 18))
     _cache[key] = surf
     return surf

@@ -147,3 +147,26 @@ def scenery(surface, kind, spots, size, seed=0):
     rng = random.Random(seed)
     for x, y in spots:
         draw(surface, x, y, size, rng)
+
+
+# ----------------------------------------------------------------------------- icons for the map
+
+def book(surface, x, y, s):
+    """An open book (the scripture passage)."""
+    page, edge = (170, 160, 135), (110, 90, 60)
+    for side in (-1, 1):
+        pts = [(x, y - s * 0.22), (x + side * s * 0.4, y - s * 0.3), (x + side * s * 0.4, y + s * 0.22), (x, y + s * 0.3)]
+        pygame.draw.polygon(surface, page, pts)
+        pygame.draw.polygon(surface, edge, pts, max(1, s // 30))
+        for k in (-0.12, 0.0, 0.12):
+            pygame.draw.line(surface, edge, (x + side * s * 0.08, y + s * (k - 0.06)), (x + side * s * 0.32, y + s * (k - 0.1)),
+                             max(1, s // 40))
+
+
+def maze_icon(surface, x, y, s, color=(150, 120, 62)):
+    """A few maze walls."""
+    t = max(2, s // 16)
+    h = s * 0.4
+    for a, b in (((-1, -1), (1, -1)), ((1, -1), (1, 1)), ((1, 1), (-1, 1)), ((-1, 1), (-1, -0.3)),
+                 ((-0.5, -0.5), (0.5, -0.5)), ((0.5, -0.5), (0.5, 0.5)), ((-0.5, 0), (-0.5, 0.5)), ((-0.5, 0.5), (0.2, 0.5))):
+        pygame.draw.line(surface, color, (x + a[0] * h, y + a[1] * h), (x + b[0] * h, y + b[1] * h), t)
